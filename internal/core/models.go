@@ -169,6 +169,7 @@ type BackupRecord struct {
 	AccountID                 string     `json:"accountId,omitempty"`
 	Type                      string     `json:"type"`
 	Name                      string     `json:"name,omitempty"`
+	SHA256                    string     `json:"sha256,omitempty"`
 	CreatedAt                 time.Time  `json:"createdAt" ts_type:"string"`
 	SourceDeviceID            string     `json:"sourceDeviceId,omitempty"`
 	SourceManifestHash        string     `json:"sourceManifestHash,omitempty"`
@@ -188,6 +189,7 @@ type Backup struct {
 	Name                      string    `json:"name"`
 	Filename                  string    `json:"filename"`
 	Size                      int64     `json:"size"`
+	SHA256                    string    `json:"sha256,omitempty"`
 	StorageAccountID          string    `json:"storageAccountId,omitempty"`
 	CreatedAt                 time.Time `json:"createdAt" ts_type:"string"`
 	SourceDeviceID            string    `json:"sourceDeviceId,omitempty"`

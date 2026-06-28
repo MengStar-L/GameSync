@@ -50,7 +50,7 @@ func (s *Store) Snapshot() AppState {
 func (s *Store) ExportState() ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return json.MarshalIndent(s.state, "", "  ")
+	return json.MarshalIndent(redactAppStateSecrets(s.state), "", "  ")
 }
 
 // ImportState restores app state from an exported backup payload.
@@ -434,14 +434,6 @@ func (s *Store) MergeRemoteCatalog(catalog RemoteCatalog) error {
 		s.state.Preferences.FavoriteGames = normalizeStringList(catalog.Preferences.FavoriteGames)
 		s.state.Preferences.FavoriteGamesUpdatedAt = catalog.Preferences.FavoriteGamesUpdatedAt
 	}
-	if catalog.Preferences != nil && !s.state.Preferences.RawgAPIKeyUpdatedAt.After(catalog.Preferences.RawgAPIKeyUpdatedAt) {
-		s.state.Preferences.RawgAPIKey = strings.TrimSpace(catalog.Preferences.RawgAPIKey)
-		s.state.Preferences.RawgAPIKeyUpdatedAt = catalog.Preferences.RawgAPIKeyUpdatedAt
-	}
-	if catalog.Preferences != nil && !s.state.Preferences.SteamGridDBAPIKeyUpdatedAt.After(catalog.Preferences.SteamGridDBAPIKeyUpdatedAt) {
-		s.state.Preferences.SteamGridDBAPIKey = strings.TrimSpace(catalog.Preferences.SteamGridDBAPIKey)
-		s.state.Preferences.SteamGridDBAPIKeyUpdatedAt = catalog.Preferences.SteamGridDBAPIKeyUpdatedAt
-	}
 
 	s.normalizeAccountsLocked()
 	s.reorderAccountsLocked()
@@ -760,6 +752,9 @@ func (s *Store) load() error {
 	if err := json.Unmarshal(content, &s.state); err != nil {
 		return fmt.Errorf("unmarshal state file: %w", err)
 	}
+	if err := unprotectAppStateSecrets(&s.state); err != nil {
+		return fmt.Errorf("unprotect state secrets: %w", err)
+	}
 
 	if s.state.Device.ID == "" {
 		hostName, err := os.Hostname()
@@ -799,7 +794,11 @@ func (s *Store) load() error {
 }
 
 func (s *Store) saveLocked() error {
-	content, err := json.MarshalIndent(s.state, "", "  ")
+	state, err := protectAppStateSecrets(s.state)
+	if err != nil {
+		return fmt.Errorf("protect state secrets: %w", err)
+	}
+	content, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
 	}
@@ -1433,6 +1432,7 @@ func normalizedBackupRegistry(records []BackupRecord) []BackupRecord {
 		record.AccountID = strings.TrimSpace(record.AccountID)
 		record.Type = strings.TrimSpace(record.Type)
 		record.Name = strings.TrimSpace(record.Name)
+		record.SHA256 = strings.TrimSpace(record.SHA256)
 		record.SourceDeviceID = strings.TrimSpace(record.SourceDeviceID)
 		record.SourceManifestHash = strings.TrimSpace(record.SourceManifestHash)
 		record.Status = strings.TrimSpace(record.Status)

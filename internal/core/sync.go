@@ -17,6 +17,10 @@ import (
 
 type Engine struct{}
 
+type syncObjectDownloader interface {
+	DownloadObjectToFile(ctx context.Context, key string, destinationPath string) error
+}
+
 type LaunchSyncInspection struct {
 	Status    string `json:"status"`
 	Message   string `json:"message"`
@@ -343,7 +347,17 @@ func (e *Engine) applyUploads(ctx context.Context, r2 *R2Client, game Game, uplo
 	return nil
 }
 
-func (e *Engine) applyDownloads(ctx context.Context, r2 *R2Client, game Game, downloads []ManifestDiff) error {
+func (e *Engine) applyDownloads(ctx context.Context, r2 syncObjectDownloader, game Game, downloads []ManifestDiff) error {
+	rollback := newLocalDownloadRollback()
+	committed := false
+	defer func() {
+		if committed {
+			rollback.commit()
+			return
+		}
+		_ = rollback.rollback()
+	}()
+
 	for _, diff := range downloads {
 		targetPath, err := safeSaveFilePath(game.SavePath, diff.Path)
 		if err != nil {
@@ -354,15 +368,19 @@ func (e *Engine) applyDownloads(ctx context.Context, r2 *R2Client, game Game, do
 			if diff.Remote == nil {
 				continue
 			}
+			if err := rollback.stage(targetPath); err != nil {
+				return err
+			}
 			if err := downloadObjectToVerifiedFile(ctx, r2, objectKey(game.ID, diff.Remote.SHA256), targetPath, diff.Remote); err != nil {
 				return err
 			}
 		case "delete_local":
-			if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			if err := rollback.stage(targetPath); err != nil {
 				return err
 			}
 		}
 	}
+	committed = true
 	return nil
 }
 
@@ -421,7 +439,109 @@ func safeSaveFilePath(root string, relPath string) (string, error) {
 	return targetAbs, nil
 }
 
-func downloadObjectToVerifiedFile(ctx context.Context, r2 *R2Client, key string, targetPath string, remote *ManifestFile) error {
+type localDownloadRollback struct {
+	entries []localDownloadRollbackEntry
+	staged  map[string]string
+}
+
+type localDownloadRollbackEntry struct {
+	targetPath string
+	backupPath string
+}
+
+func newLocalDownloadRollback() *localDownloadRollback {
+	return &localDownloadRollback{
+		staged: map[string]string{},
+	}
+}
+
+func (r *localDownloadRollback) stage(targetPath string) error {
+	if r == nil {
+		return nil
+	}
+	targetPath = strings.TrimSpace(targetPath)
+	if targetPath == "" {
+		return errors.New("rollback target path is empty")
+	}
+	if _, exists := r.staged[targetPath]; exists {
+		return nil
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			r.staged[targetPath] = ""
+			r.entries = append(r.entries, localDownloadRollbackEntry{
+				targetPath: targetPath,
+			})
+			return nil
+		}
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("sync target is a directory: %s", targetPath)
+	}
+	tempFile, err := os.CreateTemp(filepath.Dir(targetPath), ".gamesync-rollback-*")
+	if err != nil {
+		return fmt.Errorf("create rollback file: %w", err)
+	}
+	backupPath := tempFile.Name()
+	if err := tempFile.Close(); err != nil {
+		_ = os.Remove(backupPath)
+		return fmt.Errorf("close rollback file: %w", err)
+	}
+	_ = os.Remove(backupPath)
+	if err := os.Rename(targetPath, backupPath); err != nil {
+		_ = os.Remove(backupPath)
+		return fmt.Errorf("stage rollback file: %w", err)
+	}
+	r.staged[targetPath] = backupPath
+	r.entries = append(r.entries, localDownloadRollbackEntry{
+		targetPath: targetPath,
+		backupPath: backupPath,
+	})
+	return nil
+}
+
+func (r *localDownloadRollback) commit() {
+	if r == nil {
+		return
+	}
+	for _, entry := range r.entries {
+		if entry.backupPath != "" {
+			_ = os.Remove(entry.backupPath)
+		}
+	}
+}
+
+func (r *localDownloadRollback) rollback() error {
+	if r == nil {
+		return nil
+	}
+	var failures []string
+	for index := len(r.entries) - 1; index >= 0; index-- {
+		entry := r.entries[index]
+		if err := os.Remove(entry.targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			failures = append(failures, err.Error())
+			continue
+		}
+		if entry.backupPath == "" {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(entry.targetPath), 0o755); err != nil {
+			failures = append(failures, err.Error())
+			continue
+		}
+		if err := os.Rename(entry.backupPath, entry.targetPath); err != nil {
+			failures = append(failures, err.Error())
+		}
+	}
+	if len(failures) > 0 {
+		return errors.New(strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+func downloadObjectToVerifiedFile(ctx context.Context, r2 syncObjectDownloader, key string, targetPath string, remote *ManifestFile) error {
 	if remote == nil {
 		return nil
 	}

@@ -19,13 +19,27 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 const d1BaseURL = "https://api.cloudflare.com/client/v4"
 
 var ensuredD1Schemas sync.Map
+var r2UsageCache = struct {
+	sync.Mutex
+	entries map[string]r2UsageCacheEntry
+}{
+	entries: map[string]r2UsageCacheEntry{},
+}
 
 var ErrRemoteManifestChanged = errors.New("remote manifest changed during sync; please retry")
+
+const r2UsageCacheTTL = 5 * time.Minute
+
+type r2UsageCacheEntry struct {
+	usedBytes int64
+	expiresAt time.Time
+}
 
 type D1Client struct {
 	accountID  string
@@ -69,8 +83,9 @@ type tokenVerifyEnvelope struct {
 }
 
 type R2Client struct {
-	bucket string
-	client *s3.Client
+	bucket        string
+	client        *s3.Client
+	usageCacheKey string
 }
 
 type CloudflareGateway struct {
@@ -252,16 +267,7 @@ func (c *D1Client) SaveRemoteCatalog(ctx context.Context, catalog RemoteCatalog,
 
 	for _, account := range catalog.Accounts {
 		updatedAt := catalogTimestamp(account.CatalogUpdatedAt)
-		publicAccount := account
-		publicAccount.CatalogUpdatedAt = updatedAt
-		publicAccount.APIToken = ""
-		// The primary account is the trust anchor and must stay local. Secondary
-		// R2 credentials are stored in the primary account's D1 catalog so a
-		// verified primary account can restore them directly.
-		if account.IsPrimary {
-			publicAccount.R2AccessKeyID = ""
-			publicAccount.R2SecretAccessKey = ""
-		}
+		publicAccount := remoteCatalogAccount(account, updatedAt)
 		accountJSON, err := json.Marshal(publicAccount)
 		if err != nil {
 			return 0, fmt.Errorf("encode account registry: %w", err)
@@ -305,17 +311,12 @@ func (c *D1Client) SaveRemoteCatalog(ctx context.Context, catalog RemoteCatalog,
 		return 0, err
 	}
 
-	sharedPreferences := catalog.Preferences
-	if sharedPreferences == nil {
-		sharedPreferences = &RemotePreferences{}
-	}
+	sharedPreferences := remoteCatalogPreferences(catalog.Preferences)
 	preferencesJSON, err := json.Marshal(sharedPreferences)
 	if err != nil {
 		return 0, fmt.Errorf("encode shared preferences: %w", err)
 	}
 	preferencesUpdatedAt := maxTime(
-		sharedPreferences.RawgAPIKeyUpdatedAt,
-		sharedPreferences.SteamGridDBAPIKeyUpdatedAt,
 		sharedPreferences.FavoriteGamesUpdatedAt,
 		sharedPreferences.TagOrderUpdatedAt,
 		sharedPreferences.GameOrderUpdatedAt,
@@ -347,10 +348,67 @@ func remoteCatalogGame(game Game, updatedAt time.Time) Game {
 	publicGame.CatalogUpdatedAt = updatedAt
 	publicGame.InstallPath = ""
 	publicGame.SavePath = ""
+	publicGame.CoverLocalPath = ""
+	if strings.EqualFold(strings.TrimSpace(publicGame.CoverSourceType), "local_file") {
+		if reference := remoteCoverReference(publicGame.CoverCloudAccountID, publicGame.CoverCloudKey); reference != "" {
+			publicGame.CoverPath = reference
+			publicGame.CoverSource = reference
+		} else {
+			publicGame.CoverPath = ""
+			publicGame.CoverSource = ""
+		}
+	} else {
+		if !isPortableCoverValue(publicGame.CoverPath) {
+			publicGame.CoverPath = ""
+		}
+		if !isPortableCoverValue(publicGame.CoverSource) {
+			publicGame.CoverSource = ""
+		}
+	}
 	publicGame.Anchor = SyncAnchor{}
 	publicGame.LastSync = nil
 	publicGame.RuntimeUpdatedAt = time.Time{}
 	return publicGame
+}
+
+func remoteCatalogAccount(account CloudflareAccount, updatedAt time.Time) CloudflareAccount {
+	publicAccount := account
+	publicAccount.CatalogUpdatedAt = updatedAt
+	publicAccount.APIToken = ""
+	publicAccount.R2AccessKeyID = ""
+	publicAccount.R2SecretAccessKey = ""
+	return publicAccount
+}
+
+func remoteCatalogPreferences(preferences *RemotePreferences) *RemotePreferences {
+	if preferences == nil {
+		return &RemotePreferences{}
+	}
+	shared := *preferences
+	shared.RawgAPIKey = ""
+	shared.SteamGridDBAPIKey = ""
+	shared.RawgAPIKeyUpdatedAt = time.Time{}
+	shared.SteamGridDBAPIKeyUpdatedAt = time.Time{}
+	shared.FavoriteGames = normalizeStringList(shared.FavoriteGames)
+	shared.TagOrder = normalizeStringList(shared.TagOrder)
+	return &shared
+}
+
+func remoteCoverReference(accountID string, objectKey string) string {
+	accountID = strings.TrimSpace(accountID)
+	objectKey = strings.Trim(strings.TrimSpace(objectKey), "/")
+	if accountID == "" || objectKey == "" {
+		return ""
+	}
+	return "r2cover://" + accountID + "/" + objectKey
+}
+
+func isPortableCoverValue(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "http://") ||
+		strings.HasPrefix(value, "https://") ||
+		strings.HasPrefix(value, "data:") ||
+		strings.HasPrefix(value, "r2cover://")
 }
 
 func (c *D1Client) LoadCatalogRevision(ctx context.Context) (int64, error) {
@@ -757,12 +815,21 @@ func NewR2Client(ctx context.Context, account CloudflareAccount) (*R2Client, err
 	})
 
 	return &R2Client{
-		bucket: account.R2Bucket,
-		client: client,
+		bucket:        account.R2Bucket,
+		client:        client,
+		usageCacheKey: strings.Join([]string{account.AccountID, account.R2Bucket, account.R2AccessKeyID}, "|"),
 	}, nil
 }
 
 func (c *R2Client) PutObjectFromFile(ctx context.Context, key string, filePath string) error {
+	exists, err := c.objectExists(ctx, key)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("open file for upload: %w", err)
@@ -778,7 +845,35 @@ func (c *R2Client) PutObjectFromFile(ctx context.Context, key string, filePath s
 		return fmt.Errorf("put r2 object: %w", err)
 	}
 
+	c.invalidateUsageCache()
 	return nil
+}
+
+func (c *R2Client) objectExists(ctx context.Context, key string) (bool, error) {
+	_, err := c.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err == nil {
+		return true, nil
+	}
+	if isObjectNotFoundError(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("head r2 object: %w", err)
+}
+
+func isObjectNotFoundError(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(apiErr.ErrorCode())) {
+	case "notfound", "nosuchkey", "404":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *R2Client) DownloadObjectToFile(ctx context.Context, key string, destinationPath string) error {
@@ -833,6 +928,7 @@ func (c *R2Client) DeleteObject(ctx context.Context, key string) error {
 	if err != nil {
 		return fmt.Errorf("delete r2 object: %w", err)
 	}
+	c.invalidateUsageCache()
 	return nil
 }
 
@@ -940,6 +1036,10 @@ func (c *R2Client) ValidateBucketAccess(ctx context.Context) error {
 }
 
 func (c *R2Client) FetchAccountUsageBytes(ctx context.Context) (int64, error) {
+	if usedBytes, ok := c.cachedUsageBytes(); ok {
+		return usedBytes, nil
+	}
+
 	buckets, err := c.listAccessibleBuckets(ctx)
 	if err != nil {
 		return 0, err
@@ -953,7 +1053,58 @@ func (c *R2Client) FetchAccountUsageBytes(ctx context.Context) (int64, error) {
 		}
 		total += bucketBytes
 	}
+	c.cacheUsageBytes(total)
 	return total, nil
+}
+
+func (c *R2Client) cachedUsageBytes() (int64, bool) {
+	key := c.normalizedUsageCacheKey()
+	if key == "" {
+		return 0, false
+	}
+	now := time.Now()
+	r2UsageCache.Lock()
+	defer r2UsageCache.Unlock()
+	entry, ok := r2UsageCache.entries[key]
+	if !ok || !entry.expiresAt.After(now) {
+		delete(r2UsageCache.entries, key)
+		return 0, false
+	}
+	return entry.usedBytes, true
+}
+
+func (c *R2Client) cacheUsageBytes(usedBytes int64) {
+	key := c.normalizedUsageCacheKey()
+	if key == "" {
+		return
+	}
+	r2UsageCache.Lock()
+	defer r2UsageCache.Unlock()
+	r2UsageCache.entries[key] = r2UsageCacheEntry{
+		usedBytes: usedBytes,
+		expiresAt: time.Now().Add(r2UsageCacheTTL),
+	}
+}
+
+func (c *R2Client) invalidateUsageCache() {
+	key := c.normalizedUsageCacheKey()
+	if key == "" {
+		return
+	}
+	r2UsageCache.Lock()
+	defer r2UsageCache.Unlock()
+	delete(r2UsageCache.entries, key)
+}
+
+func (c *R2Client) normalizedUsageCacheKey() string {
+	if c == nil {
+		return ""
+	}
+	key := strings.TrimSpace(c.usageCacheKey)
+	if key != "" {
+		return key
+	}
+	return strings.TrimSpace(c.bucket)
 }
 
 func (c *R2Client) listAccessibleBuckets(ctx context.Context) ([]string, error) {
@@ -1037,6 +1188,7 @@ func (c *R2Client) ClearPrefix(ctx context.Context, prefix string) error {
 			return fmt.Errorf("delete objects for prefix %s failed: %w", prefix, err)
 		}
 	}
+	c.invalidateUsageCache()
 	return nil
 }
 

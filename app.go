@@ -2205,6 +2205,7 @@ func normalizeBackupRecord(record core.BackupRecord) core.BackupRecord {
 	record.AccountID = strings.TrimSpace(record.AccountID)
 	record.Type = strings.TrimSpace(record.Type)
 	record.Name = strings.TrimSpace(record.Name)
+	record.SHA256 = strings.TrimSpace(record.SHA256)
 	record.SourceDeviceID = strings.TrimSpace(record.SourceDeviceID)
 	record.SourceManifestHash = strings.TrimSpace(record.SourceManifestHash)
 	record.Status = strings.TrimSpace(record.Status)
@@ -2451,15 +2452,11 @@ func (a *App) syncRemoteCatalog() error {
 		Accounts: state.Accounts,
 		Games:    state.Games,
 		Preferences: &core.RemotePreferences{
-			RawgAPIKey:                 state.Preferences.RawgAPIKey,
-			SteamGridDBAPIKey:          state.Preferences.SteamGridDBAPIKey,
-			RawgAPIKeyUpdatedAt:        state.Preferences.RawgAPIKeyUpdatedAt,
-			SteamGridDBAPIKeyUpdatedAt: state.Preferences.SteamGridDBAPIKeyUpdatedAt,
-			TagOrder:                   state.Preferences.TagOrder,
-			TagOrderUpdatedAt:          state.Preferences.TagOrderUpdatedAt,
-			FavoriteGames:              state.Preferences.FavoriteGames,
-			FavoriteGamesUpdatedAt:     state.Preferences.FavoriteGamesUpdatedAt,
-			GameOrderUpdatedAt:         state.Preferences.GameOrderUpdatedAt,
+			TagOrder:               state.Preferences.TagOrder,
+			TagOrderUpdatedAt:      state.Preferences.TagOrderUpdatedAt,
+			FavoriteGames:          state.Preferences.FavoriteGames,
+			FavoriteGamesUpdatedAt: state.Preferences.FavoriteGamesUpdatedAt,
+			GameOrderUpdatedAt:     state.Preferences.GameOrderUpdatedAt,
 		},
 		Tombstones: activeCatalogTombstones(state),
 	}, encryptedCredentials, state.Device)
@@ -3003,6 +3000,7 @@ func (a *App) persistBackupRoute(game core.Game, backup core.Backup, accountID s
 		AccountID:                 accountID,
 		Type:                      backup.Type,
 		Name:                      backup.Name,
+		SHA256:                    strings.TrimSpace(backup.SHA256),
 		CreatedAt:                 backup.CreatedAt,
 		SourceDeviceID:            strings.TrimSpace(backup.SourceDeviceID),
 		SourceManifestHash:        strings.TrimSpace(backup.SourceManifestHash),
@@ -3068,6 +3066,7 @@ func (a *App) persistBackupRecord(game core.Game, backup core.Backup, accountID 
 		AccountID:                 strings.TrimSpace(accountID),
 		Type:                      backup.Type,
 		Name:                      backup.Name,
+		SHA256:                    strings.TrimSpace(backup.SHA256),
 		CreatedAt:                 backup.CreatedAt,
 		SourceDeviceID:            strings.TrimSpace(backup.SourceDeviceID),
 		SourceManifestHash:        strings.TrimSpace(backup.SourceManifestHash),

@@ -136,6 +136,9 @@ func (bm *BackupManager) CreateBackup(ctx context.Context, game Game, backupType
 		LocalExists: true,
 		Status:      BackupStatusReady,
 	}
+	if backupHash, err := sha256File(targetLocalPath); err == nil {
+		backup.SHA256 = backupHash
+	}
 	manifest, manifestErr := BuildLocalManifest(game.SavePath, game.Sync.IncludePatterns, game.Sync.ExcludePatterns)
 	if manifestErr == nil {
 		backup.SourceManifestHash = manifest.Hash
@@ -213,6 +216,7 @@ func applyBackupRecord(backup *Backup, record BackupRecord) {
 		backup.CreatedAt = record.CreatedAt
 	}
 	backup.SourceDeviceID = strings.TrimSpace(record.SourceDeviceID)
+	backup.SHA256 = strings.TrimSpace(record.SHA256)
 	backup.SourceManifestHash = strings.TrimSpace(record.SourceManifestHash)
 	if !record.SourceManifestGeneratedAt.IsZero() {
 		backup.SourceManifestGeneratedAt = record.SourceManifestGeneratedAt
@@ -248,6 +252,7 @@ func normalizeBackupRecordStatus(record BackupRecord) BackupRecord {
 	record.AccountID = strings.TrimSpace(record.AccountID)
 	record.Type = strings.TrimSpace(record.Type)
 	record.Name = strings.TrimSpace(record.Name)
+	record.SHA256 = strings.TrimSpace(record.SHA256)
 	record.SourceDeviceID = strings.TrimSpace(record.SourceDeviceID)
 	record.SourceManifestHash = strings.TrimSpace(record.SourceManifestHash)
 	record.Status = strings.TrimSpace(record.Status)
@@ -293,6 +298,11 @@ func (bm *BackupManager) listLocalBackupFiles(gameID string, backupDir string) m
 			CreatedAt:   info.ModTime(),
 			LocalExists: true,
 			Status:      BackupStatusReady,
+		}
+		if backupHash, err := sha256File(filepath.Join(backupDir, filename)); err == nil {
+			backup := backups[filename]
+			backup.SHA256 = backupHash
+			backups[filename] = backup
 		}
 	}
 	return backups
@@ -369,6 +379,7 @@ func (bm *BackupManager) GetBackups(ctx context.Context, game Game, dataDir stri
 			SourceDeviceID:            record.SourceDeviceID,
 			SourceManifestHash:        record.SourceManifestHash,
 			SourceManifestGeneratedAt: record.SourceManifestGeneratedAt,
+			SHA256:                    record.SHA256,
 			Status:                    record.Status,
 			PendingDelete:             record.PendingDelete,
 			LastError:                 record.LastError,
@@ -410,7 +421,13 @@ func (bm *BackupManager) GetBackups(ctx context.Context, game Game, dataDir stri
 
 func (bm *BackupManager) RestoreBackup(ctx context.Context, game Game, filename string, dataDir string, gateways map[string]*CloudflareGateway) error {
 	backupDir := bm.EnsureLocalBackupDir(dataDir, game.ID)
+	filename, err := safeBackupFilename(filename)
+	if err != nil {
+		return err
+	}
 	localPath := filepath.Join(backupDir, filename)
+	record, _ := backupRecordForFilename(filename, game.BackupRegistry)
+	expectedSHA256 := strings.TrimSpace(record.SHA256)
 
 	if _, err := os.Stat(localPath); errors.Is(err, os.ErrNotExist) {
 		remoteKey := fmt.Sprintf("backups/%s/%s", game.ID, filename)
@@ -441,17 +458,117 @@ func (bm *BackupManager) RestoreBackup(ctx context.Context, game Game, filename 
 		}
 	}
 
-	_ = os.RemoveAll(game.SavePath)
-	_ = os.MkdirAll(game.SavePath, 0o755)
+	if err := verifyBackupArchive(localPath, expectedSHA256); err != nil {
+		return err
+	}
+	return restoreBackupArchiveAtomic(localPath, game.SavePath)
+}
 
-	zipFile, err := zip.OpenReader(localPath)
+func safeBackupFilename(filename string) (string, error) {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		return "", errors.New("backup filename is empty")
+	}
+	if filename != filepath.Base(filename) || strings.Contains(filename, "/") || strings.Contains(filename, `\`) || !strings.HasSuffix(strings.ToLower(filename), ".zip") {
+		return "", fmt.Errorf("unsafe backup filename: %s", filename)
+	}
+	return filename, nil
+}
+
+func verifyBackupArchive(archivePath string, expectedSHA256 string) error {
+	if strings.TrimSpace(expectedSHA256) != "" {
+		actualSHA256, err := sha256File(archivePath)
+		if err != nil {
+			return fmt.Errorf("hash backup archive: %w", err)
+		}
+		if !strings.EqualFold(actualSHA256, strings.TrimSpace(expectedSHA256)) {
+			return fmt.Errorf("backup archive sha256 mismatch")
+		}
+	}
+
+	zipFile, err := zip.OpenReader(archivePath)
 	if err != nil {
 		return fmt.Errorf("open backup zip: %w", err)
 	}
 	defer zipFile.Close()
 
 	for _, file := range zipFile.File {
-		targetPath := filepath.Join(game.SavePath, file.Name)
+		if _, err := safeSaveFilePath(os.TempDir(), file.Name); err != nil {
+			return fmt.Errorf("unsafe backup entry %q: %w", file.Name, err)
+		}
+	}
+	return nil
+}
+
+func restoreBackupArchiveAtomic(archivePath string, savePath string) error {
+	savePath = strings.TrimSpace(savePath)
+	if savePath == "" {
+		return errors.New("save path is empty")
+	}
+	saveAbs, err := filepath.Abs(savePath)
+	if err != nil {
+		return err
+	}
+	parent := filepath.Dir(saveAbs)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("create save parent dir: %w", err)
+	}
+	staging, err := os.MkdirTemp(parent, "."+filepath.Base(saveAbs)+".restore-*")
+	if err != nil {
+		return fmt.Errorf("create restore staging dir: %w", err)
+	}
+	stagingActive := true
+	defer func() {
+		if stagingActive {
+			_ = os.RemoveAll(staging)
+		}
+	}()
+	if err := extractBackupArchive(archivePath, staging); err != nil {
+		return err
+	}
+
+	var rollback string
+	currentExists := false
+	if _, err := os.Stat(saveAbs); err == nil {
+		currentExists = true
+		rollback, err = os.MkdirTemp(parent, "."+filepath.Base(saveAbs)+".rollback-*")
+		if err != nil {
+			return fmt.Errorf("create restore rollback dir: %w", err)
+		}
+		_ = os.RemoveAll(rollback)
+		if err := os.Rename(saveAbs, rollback); err != nil {
+			return fmt.Errorf("prepare restore rollback: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat save path: %w", err)
+	}
+
+	if err := os.Rename(staging, saveAbs); err != nil {
+		if currentExists {
+			_ = os.RemoveAll(saveAbs)
+			_ = os.Rename(rollback, saveAbs)
+		}
+		return fmt.Errorf("replace save directory: %w", err)
+	}
+	stagingActive = false
+	if currentExists {
+		_ = os.RemoveAll(rollback)
+	}
+	return nil
+}
+
+func extractBackupArchive(archivePath string, destinationRoot string) error {
+	zipFile, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return fmt.Errorf("open backup zip: %w", err)
+	}
+	defer zipFile.Close()
+
+	for _, file := range zipFile.File {
+		targetPath, err := safeSaveFilePath(destinationRoot, file.Name)
+		if err != nil {
+			return fmt.Errorf("unsafe backup entry %q: %w", file.Name, err)
+		}
 		if file.FileInfo().IsDir() {
 			_ = os.MkdirAll(targetPath, 0o755)
 			continue
