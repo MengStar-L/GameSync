@@ -804,8 +804,27 @@ func (s *Store) saveLocked() error {
 		return fmt.Errorf("marshal state: %w", err)
 	}
 
-	if err := os.WriteFile(s.path, content, 0o644); err != nil {
-		return fmt.Errorf("write state: %w", err)
+	tempFile, err := os.CreateTemp(filepath.Dir(s.path), ".state-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary state file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	if _, err := tempFile.Write(content); err != nil {
+		_ = tempFile.Close()
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("write temporary state file: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("close temporary state file: %w", err)
+	}
+	if err := os.Chmod(tempPath, 0o644); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("chmod temporary state file: %w", err)
+	}
+	if err := os.Rename(tempPath, s.path); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("replace state file: %w", err)
 	}
 
 	return nil
@@ -1176,8 +1195,6 @@ func mergeGameFields(local Game, remote Game) Game {
 		merged.StorageUpdatedAt = remote.StorageUpdatedAt
 	}
 	if remote.RuntimeUpdatedAt.After(local.RuntimeUpdatedAt) {
-		merged.Anchor = remote.Anchor
-		merged.LastSync = cloneSyncSummary(remote.LastSync)
 		merged.PlayTime = remote.PlayTime
 		merged.LastPlayed = cloneTimePointer(remote.LastPlayed)
 		merged.RuntimeUpdatedAt = remote.RuntimeUpdatedAt

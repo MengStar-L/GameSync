@@ -1,10 +1,14 @@
 ﻿import {
+  ApplyUpdateAndRestart as WailsApplyUpdateAndRestart,
   Bootstrap as WailsBootstrap,
+  CheckForUpdates as WailsCheckForUpdates,
   CreateGameBackup as WailsCreateGameBackup,
   DeleteAccount as WailsDeleteAccount,
   DeleteGame as WailsDeleteGame,
   DeleteGameBackup as WailsDeleteGameBackup,
+  DownloadUpdate as WailsDownloadUpdate,
   ExportAppBackup as WailsExportAppBackup,
+  GetAppInfo as WailsGetAppInfo,
   GetGameBackups as WailsGetGameBackups,
   GetRAWGGame as WailsGetRAWGGame,
   ImportAppBackup as WailsImportAppBackup,
@@ -382,6 +386,10 @@ const App = {
     pendingDeletedBackupsByGame: {},
     startupQuietUntil: 0,
     pendingStartupRender: false,
+    appInfo: null,
+    updateCheck: null,
+    updateDownload: null,
+    updating: false,
   },
 
   async init() {
@@ -399,6 +407,7 @@ const App = {
     this.bindDragAndDrop();
     this.updateNetworkStatus("checking");
     await this.refreshSnapshot("已加载本地状态");
+    await this.refreshAppInfo();
     this.finishStartupVisuals();
     this.checkFirstLaunchRestore();
   },
@@ -461,6 +470,10 @@ const App = {
       deviceInfoList: document.getElementById("device-info-list"),
       architectureInfo: document.getElementById("architecture-info"),
       syncOverviewList: document.getElementById("sync-overview-list"),
+      appUpdateInfo: document.getElementById("app-update-info"),
+      appUpdateStatus: document.getElementById("app-update-status"),
+      checkUpdateBtn: document.getElementById("check-update-btn"),
+      applyUpdateBtn: document.getElementById("apply-update-btn"),
       gameModal: document.getElementById("game-modal"),
       accountModal: document.getElementById("account-modal"),
       conflictModal: document.getElementById("conflict-modal"),
@@ -520,6 +533,10 @@ const App = {
     if (window.go?.main?.App) {
       return {
         Bootstrap: WailsBootstrap,
+        GetAppInfo: WailsGetAppInfo,
+        CheckForUpdates: WailsCheckForUpdates,
+        DownloadUpdate: WailsDownloadUpdate,
+        ApplyUpdateAndRestart: WailsApplyUpdateAndRestart,
         CreateGameBackup: WailsCreateGameBackup,
         SaveAccount: WailsSaveAccount,
         RestoreFromPrimary: WailsRestoreFromPrimary,
@@ -774,6 +791,39 @@ const App = {
     return {
       async Bootstrap() {
         return clone(mockSnapshot);
+      },
+      async GetAppInfo() {
+        return {
+          version: "0.1.0",
+          commit: "preview",
+          buildDate: now,
+          updateChannel: "stable",
+          updateRepo: "",
+          updateManifestUrl: "",
+          platform: "windows-amd64",
+        };
+      },
+      async CheckForUpdates() {
+        return {
+          status: "latest",
+          currentVersion: "0.1.0",
+          latestVersion: "0.1.0",
+          channel: "stable",
+          platform: "windows-amd64",
+          notes: "",
+          message: "预览模式：当前已是最新版本",
+        };
+      },
+      async DownloadUpdate(request) {
+        return {
+          version: request.version,
+          archivePath: "C:/Users/Example/AppData/Roaming/GameSync/updates/mock.zip",
+          sha256: request.asset?.sha256 || "",
+          size: request.asset?.size || 0,
+        };
+      },
+      async ApplyUpdateAndRestart() {
+        return undefined;
       },
       async SaveAccount(account) {
         const current = mockSnapshot.state.accounts.find(
@@ -1254,6 +1304,12 @@ const App = {
     );
     this.dom.preferencesForm.addEventListener("submit", (event) =>
       this.submitPreferences(event),
+    );
+    this.dom.checkUpdateBtn?.addEventListener("click", () =>
+      this.checkForUpdates(),
+    );
+    this.dom.applyUpdateBtn?.addEventListener("click", () =>
+      this.applyAvailableUpdate(),
     );
 
     document.querySelectorAll("[data-close]").forEach((button) => {
@@ -3109,7 +3165,8 @@ const App = {
       !this.dom.localSettingsList ||
       !this.dom.deviceInfoList ||
       !this.dom.architectureInfo ||
-      !this.dom.syncOverviewList
+      !this.dom.syncOverviewList ||
+      !this.dom.appUpdateInfo
     ) {
       return;
     }
@@ -3137,6 +3194,7 @@ const App = {
       ["平台", device.platform],
       ["最近启动", this.formatTime(device.lastStartedAt)],
     ]);
+    this.renderUpdateSettings();
 
     document.getElementById("pref-auto-sync").checked = Boolean(
       preferences.autoSyncOnLaunch,
@@ -3176,6 +3234,118 @@ const App = {
       ["最近同步", lastSuccess ? this.formatTime(lastSuccess) : "从未"],
       ["活动记录", `${activities.length} 条`],
     ]);
+  },
+
+  async refreshAppInfo() {
+    try {
+      this.state.appInfo = await this.bridge.GetAppInfo();
+      if (this.state.page === "settings") {
+        this.renderUpdateSettings();
+      }
+    } catch (error) {
+      console.warn("读取版本信息失败:", error);
+    }
+  },
+
+  renderUpdateSettings() {
+    if (!this.dom.appUpdateInfo) {
+      return;
+    }
+    const appInfo = this.state.appInfo || {};
+    const updateCheck = this.state.updateCheck;
+    const updateDownload = this.state.updateDownload;
+    this.dom.appUpdateInfo.innerHTML = this.renderInfoRows([
+      ["当前版本", appInfo.version || "0.1.0"],
+      ["更新通道", appInfo.updateChannel || "stable"],
+      ["平台", appInfo.platform || "windows-amd64"],
+      ["构建提交", appInfo.commit || "dev"],
+    ]);
+    if (this.dom.appUpdateStatus) {
+      this.dom.appUpdateStatus.textContent = this.updateStatusText(
+        updateCheck,
+        updateDownload,
+      );
+    }
+    if (this.dom.checkUpdateBtn) {
+      this.dom.checkUpdateBtn.disabled = Boolean(this.state.updating);
+    }
+    if (this.dom.applyUpdateBtn) {
+      const canApply =
+        Boolean(updateDownload?.archivePath) ||
+        this.state.updateCheck?.status === "available";
+      this.dom.applyUpdateBtn.style.display = canApply ? "inline-flex" : "none";
+      this.dom.applyUpdateBtn.disabled = Boolean(this.state.updating);
+    }
+    this.refreshIcons();
+  },
+
+  updateStatusText(updateCheck, updateDownload) {
+    if (this.state.updating) {
+      return "正在处理更新，请稍候...";
+    }
+    if (updateDownload?.archivePath) {
+      return `新版本 ${updateDownload.version} 已下载，点击更新并重启完成安装。`;
+    }
+    if (!updateCheck) {
+      return "当前未检查更新。";
+    }
+    if (updateCheck.status === "available") {
+      return `发现新版本 ${updateCheck.latestVersion}。${updateCheck.notes || ""}`.trim();
+    }
+    return updateCheck.message || "当前已是最新版本。";
+  },
+
+  async checkForUpdates() {
+    this.state.updating = true;
+    this.state.updateDownload = null;
+    this.renderUpdateSettings();
+    try {
+      const result = await this.bridge.CheckForUpdates();
+      this.state.updateCheck = result;
+      if (result.status === "available") {
+        this.showToast(`发现新版本 ${result.latestVersion}`, "success");
+      } else if (result.status === "blocked") {
+        this.showToast(result.message || "需要手动更新", "warning");
+      } else {
+        this.showToast(result.message || "当前已是最新版本", "success");
+      }
+    } catch (error) {
+      console.error(error);
+      this.showToast(error.message || "检查更新失败", "error");
+      this.state.updateCheck = {
+        status: "failed",
+        message: error.message || "检查更新失败",
+      };
+    } finally {
+      this.state.updating = false;
+      this.renderUpdateSettings();
+    }
+  },
+
+  async applyAvailableUpdate() {
+    const check = this.state.updateCheck;
+    if (!check || check.status !== "available") {
+      return;
+    }
+    this.state.updating = true;
+    this.renderUpdateSettings();
+    try {
+      const download = await this.bridge.DownloadUpdate({
+        version: check.latestVersion,
+        asset: check.asset,
+      });
+      this.state.updateDownload = download;
+      this.renderUpdateSettings();
+      await this.bridge.ApplyUpdateAndRestart(download);
+      this.showToast("更新已开始，程序即将重启", "success");
+    } catch (error) {
+      console.error(error);
+      this.showToast(error.message || "更新失败", "error");
+      this.state.updateDownload = null;
+    } finally {
+      this.state.updating = false;
+      this.renderUpdateSettings();
+    }
   },
 
   renderInfoRows(rows) {

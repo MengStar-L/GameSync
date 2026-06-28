@@ -25,6 +25,8 @@ const d1BaseURL = "https://api.cloudflare.com/client/v4"
 
 var ensuredD1Schemas sync.Map
 
+var ErrRemoteManifestChanged = errors.New("remote manifest changed during sync; please retry")
+
 type D1Client struct {
 	accountID  string
 	databaseID string
@@ -228,10 +230,7 @@ func (c *D1Client) SaveRemoteCatalog(ctx context.Context, catalog RemoteCatalog,
 	orderUpdatedAtText := orderUpdatedAt.Format(time.RFC3339Nano)
 	for index, game := range catalog.Games {
 		updatedAt := catalogTimestamp(game.CatalogUpdatedAt)
-		publicGame := game
-		publicGame.CatalogUpdatedAt = updatedAt
-		publicGame.InstallPath = ""
-		publicGame.SavePath = ""
+		publicGame := remoteCatalogGame(game, updatedAt)
 		gameJSON, err := json.Marshal(publicGame)
 		if err != nil {
 			return 0, fmt.Errorf("encode game catalog: %w", err)
@@ -341,6 +340,17 @@ func (c *D1Client) SaveRemoteCatalog(ctx context.Context, catalog RemoteCatalog,
 		return 0, err
 	}
 	return c.IncrementCatalogRevision(ctx)
+}
+
+func remoteCatalogGame(game Game, updatedAt time.Time) Game {
+	publicGame := game
+	publicGame.CatalogUpdatedAt = updatedAt
+	publicGame.InstallPath = ""
+	publicGame.SavePath = ""
+	publicGame.Anchor = SyncAnchor{}
+	publicGame.LastSync = nil
+	publicGame.RuntimeUpdatedAt = time.Time{}
+	return publicGame
 }
 
 func (c *D1Client) LoadCatalogRevision(ctx context.Context) (int64, error) {
@@ -586,6 +596,69 @@ func (c *D1Client) SaveRemoteManifest(ctx context.Context, record RemoteManifest
 	return err
 }
 
+func (c *D1Client) SaveRemoteManifestIfVersion(ctx context.Context, record RemoteManifestRecord, expectedVersion int) error {
+	manifestJSON, err := json.Marshal(record.Manifest)
+	if err != nil {
+		return fmt.Errorf("encode manifest: %w", err)
+	}
+	updatedAt := record.UpdatedAt.Format(time.RFC3339Nano)
+	if expectedVersion == 0 {
+		if _, err := c.Query(ctx,
+			`INSERT INTO sync_manifests (game_id, version, manifest_json, total_bytes, updated_at, updated_by_device)
+			 SELECT ?, ?, ?, ?, ?, ?
+			 WHERE NOT EXISTS (SELECT 1 FROM sync_manifests WHERE game_id = ?);`,
+			record.GameID,
+			record.Version,
+			string(manifestJSON),
+			record.Manifest.TotalBytes,
+			updatedAt,
+			record.UpdatedByDevice,
+			record.GameID,
+		); err != nil {
+			return err
+		}
+	} else {
+		if _, err := c.Query(ctx,
+			`UPDATE sync_manifests
+			 SET version = ?, manifest_json = ?, total_bytes = ?, updated_at = ?, updated_by_device = ?
+			 WHERE game_id = ? AND version = ?;`,
+			record.Version,
+			string(manifestJSON),
+			record.Manifest.TotalBytes,
+			updatedAt,
+			record.UpdatedByDevice,
+			record.GameID,
+			expectedVersion,
+		); err != nil {
+			return err
+		}
+	}
+
+	current, err := c.LoadRemoteManifest(ctx, record.GameID)
+	if err != nil {
+		return err
+	}
+	if current.Version != record.Version || current.Manifest.Hash != record.Manifest.Hash {
+		return ErrRemoteManifestChanged
+	}
+	return c.saveRemoteRevision(ctx, record, string(manifestJSON))
+}
+
+func (c *D1Client) saveRemoteRevision(ctx context.Context, record RemoteManifestRecord, manifestJSON string) error {
+	_, err := c.Query(ctx,
+		`INSERT INTO sync_revisions (game_id, version, manifest_json, total_bytes, updated_at, updated_by_device)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(game_id, version) DO NOTHING;`,
+		record.GameID,
+		record.Version,
+		manifestJSON,
+		record.Manifest.TotalBytes,
+		record.UpdatedAt.Format(time.RFC3339Nano),
+		record.UpdatedByDevice,
+	)
+	return err
+}
+
 func (c *D1Client) Query(ctx context.Context, sql string, args ...any) ([]map[string]any, error) {
 	payload, err := json.Marshal(d1QueryRequest{
 		SQL:    sql,
@@ -750,6 +823,17 @@ func (c *R2Client) GetObjectBytes(ctx context.Context, key string) ([]byte, erro
 		return nil, fmt.Errorf("read r2 object: %w", err)
 	}
 	return data, nil
+}
+
+func (c *R2Client) DeleteObject(ctx context.Context, key string) error {
+	_, err := c.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("delete r2 object: %w", err)
+	}
+	return nil
 }
 
 func VerifyCloudflareAccount(ctx context.Context, account CloudflareAccount) (CloudflareAccount, error) {

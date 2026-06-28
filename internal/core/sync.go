@@ -152,7 +152,7 @@ func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, gam
 				Message:  "本地与云端都没有可同步的存档。",
 				SyncedAt: time.Now(),
 			}
-			return summary, SyncAnchor{LastManifest: localManifest}, nil
+			return summary, SyncAnchor{LastManifest: localManifest, StorageAccountID: game.StorageAccountID}, nil
 		}
 
 		progress("云端为空，正在初始化第一个远端版本...")
@@ -170,7 +170,7 @@ func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, gam
 			UpdatedAt:       time.Now(),
 			UpdatedByDevice: device.ID,
 		}
-		if err := gateway.D1.SaveRemoteManifest(ctx, record); err != nil {
+		if err := gateway.D1.SaveRemoteManifestIfVersion(ctx, record, 0); err != nil {
 			return SyncSummary{}, game.Anchor, err
 		}
 
@@ -180,11 +180,16 @@ func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, gam
 			Uploaded: len(uploads),
 			SyncedAt: time.Now(),
 		}
-		return summary, SyncAnchor{LastRemoteVersion: nextVersion, LastManifest: localManifest}, nil
+		return summary, SyncAnchor{LastRemoteVersion: nextVersion, LastManifest: localManifest, StorageAccountID: game.StorageAccountID}, nil
 	}
 
 	baseManifest := game.Anchor.LastManifest
 	mergedManifest, uploads, downloads, conflicts := mergeManifests(baseManifest, localManifest, remoteRecord.Manifest, conflictChoice)
+	storageChanged := strings.TrimSpace(game.Anchor.StorageAccountID) != "" &&
+		strings.TrimSpace(game.Anchor.StorageAccountID) != strings.TrimSpace(game.StorageAccountID)
+	if storageChanged {
+		uploads = forceUploadManifestFiles(uploads, mergedManifest)
+	}
 	if len(conflicts) > 0 && strings.TrimSpace(conflictChoice) == "" {
 		return SyncSummary{
 			Status:    "conflict",
@@ -198,6 +203,7 @@ func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, gam
 		anchor := SyncAnchor{
 			LastRemoteVersion: remoteRecord.Version,
 			LastManifest:      remoteRecord.Manifest,
+			StorageAccountID:  game.StorageAccountID,
 		}
 		if remoteRecord.Version == 0 {
 			anchor.LastManifest = localManifest
@@ -234,14 +240,17 @@ func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, gam
 			UpdatedByDevice: device.ID,
 		}
 		progress("正在写入新的 D1 版本索引...")
-		if err := gateway.D1.SaveRemoteManifest(ctx, record); err != nil {
+		if err := gateway.D1.SaveRemoteManifestIfVersion(ctx, record, remoteRecord.Version); err != nil {
 			return SyncSummary{}, game.Anchor, err
 		}
+		e.cleanupRemoteObjects(ctx, gateway.R2, game.ID, mergedManifest, uploads)
 		anchor.LastRemoteVersion = mergedManifest.Version
 		anchor.LastManifest = mergedManifest
+		anchor.StorageAccountID = game.StorageAccountID
 	} else {
 		anchor.LastRemoteVersion = remoteRecord.Version
 		anchor.LastManifest = remoteRecord.Manifest
+		anchor.StorageAccountID = game.StorageAccountID
 	}
 
 	summary := SyncSummary{
@@ -323,7 +332,10 @@ func (e *Engine) applyUploads(ctx context.Context, r2 *R2Client, game Game, uplo
 		if diff.Action != "upload" || diff.Local == nil {
 			continue
 		}
-		localFilePath := filepath.Join(game.SavePath, filepath.FromSlash(diff.Path))
+		localFilePath, err := safeSaveFilePath(game.SavePath, diff.Path)
+		if err != nil {
+			return err
+		}
 		if err := r2.PutObjectFromFile(ctx, objectKey(game.ID, diff.Local.SHA256), localFilePath); err != nil {
 			return err
 		}
@@ -333,13 +345,16 @@ func (e *Engine) applyUploads(ctx context.Context, r2 *R2Client, game Game, uplo
 
 func (e *Engine) applyDownloads(ctx context.Context, r2 *R2Client, game Game, downloads []ManifestDiff) error {
 	for _, diff := range downloads {
-		targetPath := filepath.Join(game.SavePath, filepath.FromSlash(diff.Path))
+		targetPath, err := safeSaveFilePath(game.SavePath, diff.Path)
+		if err != nil {
+			return err
+		}
 		switch diff.Action {
 		case "download":
 			if diff.Remote == nil {
 				continue
 			}
-			if err := r2.DownloadObjectToFile(ctx, objectKey(game.ID, diff.Remote.SHA256), targetPath); err != nil {
+			if err := downloadObjectToVerifiedFile(ctx, r2, objectKey(game.ID, diff.Remote.SHA256), targetPath, diff.Remote); err != nil {
 				return err
 			}
 		case "delete_local":
@@ -347,6 +362,107 @@ func (e *Engine) applyDownloads(ctx context.Context, r2 *R2Client, game Game, do
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func (e *Engine) cleanupRemoteObjects(ctx context.Context, r2 *R2Client, gameID string, manifest SyncManifest, diffs []ManifestDiff) {
+	if r2 == nil {
+		return
+	}
+	referenced := make(map[string]bool, len(manifest.Files))
+	for _, file := range manifest.Files {
+		if strings.TrimSpace(file.SHA256) != "" {
+			referenced[file.SHA256] = true
+		}
+	}
+	seen := make(map[string]bool)
+	for _, diff := range diffs {
+		if diff.Remote == nil || strings.TrimSpace(diff.Remote.SHA256) == "" {
+			continue
+		}
+		sha := strings.TrimSpace(diff.Remote.SHA256)
+		if referenced[sha] || seen[sha] {
+			continue
+		}
+		seen[sha] = true
+		_ = r2.DeleteObject(ctx, objectKey(gameID, sha))
+	}
+}
+
+func safeSaveFilePath(root string, relPath string) (string, error) {
+	root = strings.TrimSpace(root)
+	relPath = filepath.ToSlash(strings.TrimSpace(relPath))
+	if root == "" {
+		return "", errors.New("save path is empty")
+	}
+	if relPath == "" || relPath == "." || strings.HasPrefix(relPath, "/") {
+		return "", fmt.Errorf("unsafe save file path: %s", relPath)
+	}
+	nativeRel := filepath.FromSlash(relPath)
+	if filepath.IsAbs(nativeRel) {
+		return "", fmt.Errorf("unsafe save file path: %s", relPath)
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	targetAbs, err := filepath.Abs(filepath.Join(rootAbs, nativeRel))
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		return "", err
+	}
+	if relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", fmt.Errorf("unsafe save file path: %s", relPath)
+	}
+	return targetAbs, nil
+}
+
+func downloadObjectToVerifiedFile(ctx context.Context, r2 *R2Client, key string, targetPath string, remote *ManifestFile) error {
+	if remote == nil {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return fmt.Errorf("create destination dir: %w", err)
+	}
+	tempFile, err := os.CreateTemp(filepath.Dir(targetPath), ".gamesync-download-*")
+	if err != nil {
+		return fmt.Errorf("create temporary download file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	_ = tempFile.Close()
+	defer func() {
+		_ = os.Remove(tempPath)
+	}()
+
+	if err := r2.DownloadObjectToFile(ctx, key, tempPath); err != nil {
+		return err
+	}
+	downloadedHash, err := sha256File(tempPath)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(downloadedHash, remote.SHA256) {
+		return fmt.Errorf("downloaded object hash mismatch for %s", remote.Path)
+	}
+	info, err := os.Stat(tempPath)
+	if err != nil {
+		return err
+	}
+	if info.Size() != remote.Size {
+		return fmt.Errorf("downloaded object size mismatch for %s", remote.Path)
+	}
+	if !remote.ModifiedAt.IsZero() {
+		_ = os.Chtimes(tempPath, remote.ModifiedAt, remote.ModifiedAt)
+	}
+	if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(tempPath, targetPath); err != nil {
+		return fmt.Errorf("replace destination file: %w", err)
 	}
 	return nil
 }
@@ -475,6 +591,29 @@ func diffsFromManifest(manifest SyncManifest, action string) []ManifestDiff {
 		result = append(result, ManifestDiff{
 			Path:   file.Path,
 			Action: action,
+			Local:  &copied,
+		})
+	}
+	return result
+}
+
+func forceUploadManifestFiles(existing []ManifestDiff, manifest SyncManifest) []ManifestDiff {
+	seen := make(map[string]bool, len(existing))
+	for _, diff := range existing {
+		if diff.Action == "upload" {
+			seen[diff.Path] = true
+		}
+	}
+	result := append([]ManifestDiff{}, existing...)
+	for index := range manifest.Files {
+		file := manifest.Files[index]
+		if seen[file.Path] {
+			continue
+		}
+		copied := file
+		result = append(result, ManifestDiff{
+			Path:   file.Path,
+			Action: "upload",
 			Local:  &copied,
 		})
 	}

@@ -51,6 +51,8 @@ type App struct {
 	backupDeleteMu    sync.Mutex
 	backupDeleteQueue chan queuedBackupDelete
 	backupDeleteSet   map[string]queuedBackupDelete
+	syncGameMu        sync.Mutex
+	syncGameLocks     map[string]*sync.Mutex
 }
 
 type queuedGameDelete struct {
@@ -148,6 +150,7 @@ func NewApp() *App {
 		backupUploadSet:   make(map[string]queuedBackupUpload),
 		backupDeleteQueue: make(chan queuedBackupDelete, 32),
 		backupDeleteSet:   make(map[string]queuedBackupDelete),
+		syncGameLocks:     make(map[string]*sync.Mutex),
 	}
 }
 
@@ -230,6 +233,54 @@ func (a *App) Bootstrap() (core.DashboardSnapshot, error) {
 	}
 	go a.pullRemoteCatalogInBackground("bootstrap")
 	return a.snapshot()
+}
+
+func (a *App) GetAppInfo() (core.AppInfo, error) {
+	if err := a.ensureReady(); err != nil {
+		return core.AppInfo{}, err
+	}
+	return core.CurrentAppInfo(), nil
+}
+
+func (a *App) CheckForUpdates() (core.UpdateCheckResult, error) {
+	if err := a.ensureReady(); err != nil {
+		return core.UpdateCheckResult{}, err
+	}
+	updater := core.NewUpdater(core.UpdateOptions{
+		DataDir: a.store.DataDir(),
+	})
+	return updater.Check(a.syncContext())
+}
+
+func (a *App) DownloadUpdate(request core.UpdateDownloadRequest) (core.UpdateDownloadResult, error) {
+	if err := a.ensureReady(); err != nil {
+		return core.UpdateDownloadResult{}, err
+	}
+	updater := core.NewUpdater(core.UpdateOptions{
+		DataDir: a.store.DataDir(),
+	})
+	return updater.Download(a.syncContext(), request)
+}
+
+func (a *App) ApplyUpdateAndRestart(download core.UpdateDownloadResult) error {
+	if err := a.ensureReady(); err != nil {
+		return err
+	}
+	executablePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+	updater := core.NewUpdater(core.UpdateOptions{
+		DataDir: a.store.DataDir(),
+	})
+	if err := updater.ApplyAndRestart(download, executablePath); err != nil {
+		return err
+	}
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		wailsruntime.Quit(a.ctx)
+	}()
+	return nil
 }
 
 func (a *App) SaveAccount(account core.CloudflareAccount) (core.DashboardSnapshot, error) {
@@ -1160,9 +1211,12 @@ func (a *App) RunSync(request core.SyncRunRequest) (core.DashboardSnapshot, erro
 		return core.DashboardSnapshot{}, err
 	}
 
-	if strings.TrimSpace(request.GameID) == "" {
+	request.GameID = strings.TrimSpace(request.GameID)
+	if request.GameID == "" {
 		return core.DashboardSnapshot{}, errors.New(msgGameIDRequired)
 	}
+	unlock := a.lockGameSync(request.GameID)
+	defer unlock()
 
 	state := a.store.Snapshot()
 	game, storageAccount, err := findGameAndAccount(state, request.GameID)
@@ -1181,7 +1235,8 @@ func (a *App) RunSync(request core.SyncRunRequest) (core.DashboardSnapshot, erro
 	var summary core.SyncSummary
 	var anchor core.SyncAnchor
 	if err == nil {
-		summary, anchor, err = a.engine.SyncGameWithGateway(a.syncContext(), state.Device, game, gateway, request.ConflictChoice, func(message string) {
+		conflictChoice := resolveSyncConflictChoice(game, state.Preferences, request.ConflictChoice)
+		summary, anchor, err = a.engine.SyncGameWithGateway(a.syncContext(), state.Device, game, gateway, conflictChoice, func(message string) {
 			a.emitSyncProgress(game.ID, message)
 		})
 	}
@@ -1219,6 +1274,40 @@ func (a *App) RunSync(request core.SyncRunRequest) (core.DashboardSnapshot, erro
 	a.emitSyncProgress(game.ID, summary.Message)
 	a.queueRemoteCatalogSync("manual sync")
 	return a.snapshot()
+}
+
+func (a *App) lockGameSync(gameID string) func() {
+	a.syncGameMu.Lock()
+	if a.syncGameLocks == nil {
+		a.syncGameLocks = make(map[string]*sync.Mutex)
+	}
+	lock := a.syncGameLocks[gameID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		a.syncGameLocks[gameID] = lock
+	}
+	a.syncGameMu.Unlock()
+
+	lock.Lock()
+	return lock.Unlock
+}
+
+func resolveSyncConflictChoice(game core.Game, preferences core.Preferences, explicitChoice string) string {
+	choice := strings.ToLower(strings.TrimSpace(explicitChoice))
+	switch choice {
+	case "local", "remote", "cloud":
+		return choice
+	}
+	policy := strings.ToLower(strings.TrimSpace(game.Sync.ConflictStrategy))
+	if policy == "" || policy == "manual" {
+		policy = strings.ToLower(strings.TrimSpace(preferences.ConflictPolicy))
+	}
+	switch policy {
+	case "local", "remote", "cloud":
+		return policy
+	default:
+		return ""
+	}
 }
 
 func (a *App) PrepareGameLaunch(gameID string, conflictChoice string) (map[string]any, error) {
@@ -1273,9 +1362,10 @@ func (a *App) PrepareGameLaunch(gameID string, conflictChoice string) (map[strin
 	if err != nil {
 		return nil, err
 	}
+	resolvedConflictChoice := resolveSyncConflictChoice(game, state.Preferences, conflictChoice)
 
 	if inspection.Status == "conflict" {
-		if strings.TrimSpace(conflictChoice) == "" {
+		if strings.TrimSpace(resolvedConflictChoice) == "" {
 			snapshot, snapErr := a.snapshot()
 			if snapErr != nil {
 				return nil, snapErr
@@ -1289,10 +1379,14 @@ func (a *App) PrepareGameLaunch(gameID string, conflictChoice string) (map[strin
 		}
 	}
 
-	if inspection.Status == "cloud_newer" || inspection.Status == "local_newer" || inspection.Status == "merge_needed" || strings.TrimSpace(conflictChoice) != "" {
+	if inspection.Status == "cloud_newer" ||
+		inspection.Status == "local_newer" ||
+		inspection.Status == "merge_needed" ||
+		inspection.Status == "conflict" ||
+		strings.TrimSpace(conflictChoice) != "" {
 		snapshot, syncErr := a.RunSync(core.SyncRunRequest{
 			GameID:         gameID,
-			ConflictChoice: conflictChoice,
+			ConflictChoice: resolvedConflictChoice,
 		})
 		if syncErr != nil {
 			return nil, syncErr

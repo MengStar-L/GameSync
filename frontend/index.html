@@ -118,6 +118,16 @@
             </section>
 
             <section class="settings-section">
+              <h3 class="settings-section-title">软件更新</h3>
+              <div id="app-update-info"></div>
+              <div class="settings-inline-actions" style="margin-top:12px; justify-content:flex-start;">
+                <button class="btn btn-secondary" id="check-update-btn" type="button"><span data-lucide="refresh-cw"></span> 检查更新</button>
+                <button class="btn btn-primary" id="apply-update-btn" type="button" style="display:none;"><span data-lucide="download"></span> 更新并重启</button>
+              </div>
+              <div class="field-help" id="app-update-status">当前未检查更新。</div>
+            </section>
+
+            <section class="settings-section">
               <h3 class="settings-section-title">同步偏好</h3>
               <form id="preferences-form">
                 <div class="form-group">

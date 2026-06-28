@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>GameSync</title>
-  <script type="module" crossorigin src="/assets/index-4XfW467J.js"></script>
+  <script type="module" crossorigin src="/assets/index-Cb4dlbI0.js"></script>
   <link rel="stylesheet" crossorigin href="/assets/index-lLuCYnaW.css">
 </head>
 <body class="app-booting">
@@ -111,6 +111,16 @@
             <section class="settings-section">
               <h3 class="settings-section-title">设备信息</h3>
               <div id="device-info-list"></div>
+            </section>
+
+            <section class="settings-section">
+              <h3 class="settings-section-title">软件更新</h3>
+              <div id="app-update-info"></div>
+              <div class="settings-inline-actions" style="margin-top:12px; justify-content:flex-start;">
+                <button class="btn btn-secondary" id="check-update-btn" type="button"><span data-lucide="refresh-cw"></span> 检查更新</button>
+                <button class="btn btn-primary" id="apply-update-btn" type="button" style="display:none;"><span data-lucide="download"></span> 更新并重启</button>
+              </div>
+              <div class="field-help" id="app-update-status">当前未检查更新。</div>
             </section>
 
             <section class="settings-section">

@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: "frontend/package-lock.json"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Prepare version
+        id: vars
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $buildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "buildDate=$buildDate" >> $env:GITHUB_OUTPUT
+          $wails = Get-Content -Raw -LiteralPath "wails.json" | ConvertFrom-Json
+          $wails.info.productVersion = $version
+          $wails | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath "wails.json" -Encoding UTF8
+
+      - name: Build GameSync
+        shell: pwsh
+        run: |
+          $ldflags = @(
+            "-X", "gamesync/internal/core.Version=${{ steps.vars.outputs.version }}",
+            "-X", "gamesync/internal/core.Commit=${{ github.sha }}",
+            "-X", "gamesync/internal/core.BuildDate=${{ steps.vars.outputs.buildDate }}",
+            "-X", "gamesync/internal/core.UpdateChannel=stable",
+            "-X", "gamesync/internal/core.UpdateRepo=${{ github.repository }}",
+            "-X", "gamesync/internal/core.UpdateManifestURL=https://github.com/${{ github.repository }}/releases/latest/download/latest.json"
+          ) -join " "
+          wails build -platform windows/amd64 -clean -ldflags "$ldflags"
+
+      - name: Build updater helper
+        shell: pwsh
+        run: |
+          go build -trimpath -ldflags "-s -w" -o build/bin/gamesync-updater.exe ./cmd/gamesync-updater
+
+      - name: Package release
+        shell: pwsh
+        run: |
+          .\scripts\package-release.ps1 -Version "${{ steps.vars.outputs.version }}" -Platform "windows-amd64"
+          $zip = "dist/release/GameSync-v${{ steps.vars.outputs.version }}-windows-amd64.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          $size = (Get-Item -LiteralPath $zip).Length
+          .\scripts\make-latest-json.ps1 `
+            -Version "${{ steps.vars.outputs.version }}" `
+            -Repo "${{ github.repository }}" `
+            -Platform "windows-amd64" `
+            -Sha256 $hash `
+            -Size $size `
+            -OutputPath "dist/release/latest.json"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/release/*

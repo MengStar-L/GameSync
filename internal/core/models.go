@@ -234,6 +234,7 @@ type SyncConfig struct {
 type SyncAnchor struct {
 	LastRemoteVersion int          `json:"lastRemoteVersion"`
 	LastManifest      SyncManifest `json:"lastManifest"`
+	StorageAccountID  string       `json:"storageAccountId,omitempty"`
 }
 
 type SyncManifest struct {
