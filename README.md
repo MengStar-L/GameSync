@@ -76,7 +76,7 @@ GameSync 是一个面向 Windows 桌面的游戏存档管理与云同步工具�
 
 ### 安全更新
 
-- GitHub tag 会触发云端构建，自动发布 Windows ZIP、updater 和 `latest.json`。
+- GitHub tag 会触发云端构建，自动发布一个包含主程序和 updater 的 Windows ZIP。
 - 程序内检查更新时只接受 HTTPS GitHub Release 下载地址。
 - 下载包会校验文件大小和 SHA256。
 - updater 解压时会阻止路径逃逸，并在替换失败时回滚。

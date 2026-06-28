@@ -34,7 +34,10 @@ if (Test-Path -LiteralPath $zipPath) {
 Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $zipPath -Force
 
 $updaterName = "gamesync-updater-v$Version-$Platform.exe"
-Copy-Item -LiteralPath $updaterExe -Destination (Join-Path $OutputDir $updaterName) -Force
+$legacyUpdaterAsset = Join-Path $OutputDir $updaterName
+if (Test-Path -LiteralPath $legacyUpdaterAsset) {
+  Remove-Item -LiteralPath $legacyUpdaterAsset -Force
+}
 
 $checksumPath = Join-Path $OutputDir "checksums.txt"
 if (Test-Path -LiteralPath $checksumPath) {

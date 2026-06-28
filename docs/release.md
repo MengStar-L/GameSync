@@ -1,6 +1,6 @@
 # Release and Auto Update
 
-GameSync uses GitHub Releases as the update channel. A tag such as `v0.1.1` triggers GitHub Actions, builds the Windows executable, creates a release ZIP, writes `latest.json`, and uploads all artifacts.
+GameSync uses GitHub Releases as the stable update channel. A tag such as `v0.1.1` triggers GitHub Actions, builds the Windows executable and updater helper, creates one user-facing ZIP, writes `latest.json`, and uploads the release metadata.
 
 ## Release Flow
 
@@ -15,17 +15,25 @@ git push origin v0.1.1
 3. GitHub Actions runs `.github/workflows/release.yml`.
 4. The release contains:
    - `GameSync-v0.1.1-windows-amd64.zip`
-   - `gamesync-updater-v0.1.1-windows-amd64.exe`
    - `latest.json`
    - `checksums.txt`
+
+The ZIP contains both runtime executables:
+
+```text
+GameSync.exe
+gamesync-updater.exe
+```
+
+`gamesync-updater.exe` is bundled inside the ZIP because the application needs it during in-app updates, but users should only need to download the main ZIP.
 
 ## Runtime Update Flow
 
 1. The app calls `CheckForUpdates`.
 2. It reads `latest.json` from the configured GitHub Release URL.
 3. It compares the current build version with the manifest version.
-4. If an update is available, the user clicks `更新并重启`.
-5. The app downloads the ZIP, verifies SHA256 and size, copies `gamesync-updater.exe` to a temporary helper location, starts it, and exits.
+4. If an update is available, the user clicks "Update and restart".
+5. The app downloads the ZIP, verifies SHA256 and size, copies the installed `gamesync-updater.exe` to a temporary helper location, starts it, and exits.
 6. The helper waits for the main process to exit, verifies the ZIP again, extracts to staging, backs up replaced files, copies the new files into the app directory, and restarts `GameSync.exe`.
 
 ## Build-Time Variables
@@ -62,8 +70,8 @@ cd frontend
 npm run build
 cd ..
 wails build -clean
-go build -o build/bin/gamesync-updater.exe ./cmd/gamesync-updater
+go build -trimpath -ldflags "-s -w" -o build/bin/gamesync-updater.exe ./cmd/gamesync-updater
 .\scripts\package-release.ps1 -Version "0.1.1"
 ```
 
-Then test update with a draft or private release before pushing the public tag.
+Then inspect the ZIP and test update with a draft or private release before pushing the public tag.
