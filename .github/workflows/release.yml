@@ -64,6 +64,10 @@ jobs:
           ) -join " "
           wails build -platform windows/amd64 -clean -ldflags "$ldflags"
 
+      - name: Verify app icon
+        shell: pwsh
+        run: .\scripts\verify-windows-icon.ps1 -ExecutablePath "build/bin/GameSync.exe" -PreviewPath "build/windows/exe-icon-preview.png"
+
       - name: Build updater helper
         shell: pwsh
         run: |

@@ -1,5 +1,9 @@
 bin/
-build/
+build/*
+!build/appicon.png
+!build/windows/
+build/windows/*
+!build/windows/icon.ico
 wailsjs/
 .gocache/
 node_modules/

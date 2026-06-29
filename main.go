@@ -39,6 +39,7 @@ func main() {
 		WindowStartState: windowState.WindowStartState(),
 		Windows: &windowsoptions.Options{
 			ResizeDebounceMS: 0,
+			WindowClassName:  "GameSyncWindow",
 		},
 		Bind: []interface{}{
 			app,

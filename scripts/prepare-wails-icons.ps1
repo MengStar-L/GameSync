@@ -19,7 +19,7 @@ New-Item -ItemType Directory -Force -Path $windowsBuildDir | Out-Null
 Copy-Item -LiteralPath $sourceIcon -Destination $appIcon -Force
 
 # Wails only regenerates build/windows/icon.ico when it is missing.
-# Remove any stale/default icon so the release exe is compiled with resource/im1.png.
+# Remove stale/default output first; the regenerated icon.ico is tracked for review.
 if (Test-Path -LiteralPath $windowsIcon) {
   Remove-Item -LiteralPath $windowsIcon -Force
 }

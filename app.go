@@ -32,6 +32,8 @@ type App struct {
 	savedWindowState  windowState
 	windowStateLoaded bool
 	tray              trayController
+	windowIconMu      sync.Mutex
+	windowIconCleanup func()
 	catalogSyncMu     sync.Mutex
 	catalogSyncTimer  *time.Timer
 	catalogRetryTimer *time.Timer
@@ -195,7 +197,12 @@ func (a *App) startBackupDeleteWorker() {
 
 func (a *App) domReady(ctx context.Context) {
 	a.ctx = ctx
+	a.applyWindowIcon(ctx)
 	wailsruntime.WindowShow(ctx)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		a.applyWindowIcon(ctx)
+	}()
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -207,6 +214,7 @@ func (a *App) shutdown(ctx context.Context) {
 		a.tray.Close()
 		a.tray = nil
 	}
+	a.releaseWindowIcon()
 	a.catalogSyncMu.Lock()
 	if a.catalogSyncTimer != nil {
 		a.catalogSyncTimer.Stop()
