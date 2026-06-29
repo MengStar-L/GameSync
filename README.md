@@ -5,235 +5,204 @@
 <h1 align="center">GameSync</h1>
 
 <p align="center">
-  <strong>把 PC 游戏存档、封面资料、备份与云端同步放进一个干净的桌面应用。</strong>
+  <strong>把 PC 游戏存档、封面、备份和多设备同步整理到一个干净的桌面应用里。</strong>
 </p>
 
 <p align="center">
-  <img alt="Go" src="https://img.shields.io/badge/Go-1.22%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white">
-  <img alt="Wails" src="https://img.shields.io/badge/Wails-Desktop-DF0000?style=for-the-badge">
-  <img alt="Cloudflare" src="https://img.shields.io/badge/Cloudflare-D1%20%2B%20R2-F38020?style=for-the-badge&logo=cloudflare&logoColor=white">
   <img alt="Windows" src="https://img.shields.io/badge/Windows-AMD64-0078D4?style=for-the-badge&logo=windows&logoColor=white">
+  <img alt="Cloudflare" src="https://img.shields.io/badge/Cloudflare-D1%20%2B%20R2-F38020?style=for-the-badge&logo=cloudflare&logoColor=white">
+  <img alt="Auto Update" src="https://img.shields.io/badge/Auto%20Update-GitHub%20Release-181717?style=for-the-badge&logo=github">
   <img alt="Release" src="https://img.shields.io/github/v/release/MengStar-L/GameSync?style=for-the-badge&logo=github&label=Release">
 </p>
 
 <p align="center">
-  <a href="#快速开始">快速开始</a>
+  <a href="#适合谁">适合谁</a>
   ·
-  <a href="#功能特性">功能特性</a>
+  <a href="#主要功能">主要功能</a>
   ·
-  <a href="#同步架构">同步架构</a>
+  <a href="#下载安装">下载安装</a>
   ·
-  <a href="#自动更新">自动更新</a>
+  <a href="#首次配置">首次配置</a>
   ·
-  <a href="#开发构建">开发构建</a>
+  <a href="#日常使用">日常使用</a>
+  ·
+  <a href="#数据安全">数据安全</a>
+  ·
+  <a href="#常见问题">常见问题</a>
 </p>
 
 ---
 
-GameSync 是一个面向 Windows 桌面的游戏存档管理与云同步工具。它用 Cloudflare D1 保存游戏配置、同步索引和 manifest，用 Cloudflare R2 保存实际存档对象、封面缓存和备份文件，让不同设备之间的游戏存档可以像 Steam Cloud 一样自动判断上传、下载与冲突。
+GameSync 是一个 Windows 桌面工具，用来管理那些没有稳定云存档的 PC 游戏、独立游戏、第三方平台游戏、模拟器存档或手动安装的游戏。你可以把每个游戏的存档目录登记进 GameSync，然后让它帮你完成同步、备份、恢复和冲突处理。
 
-它适合想把第三方游戏、独立游戏、模拟器存档或非 Steam 存档统一管理的人。你可以为每个游戏绑定不同的 Cloudflare 账号，把免费 R2 空间拆成多个存档池；也可以在程序里一键检查 GitHub Release 更新，下载完成后自动替换并重启。
+它的目标很简单：少一点手动复制存档，少一点“我到底哪台电脑上的存档更新”的焦虑。
 
-## 工作流
+## 适合谁
 
-| 场景 | GameSync 做什么 | 结果 |
-| --- | --- | --- |
-| 添加游戏 | 选择启动文件、存档目录、封面与同步账号 | 游戏进入统一面板，可随时启动、同步和备份 |
-| 启动前检查 | 对比本地 manifest、上次同步锚点和云端 manifest | 自动决定下载云端、保留本地或提示冲突 |
-| 手动同步 | 扫描存档目录并生成内容哈希 | 只上传变化对象，减少重复存储 |
-| 存档备份 | 创建手动或自动备份，并记录云端路由 | 可以回滚到指定备份版本 |
-| 软件更新 | 读取 GitHub Release 的 `latest.json` | 校验 SHA256 后自动安装并重启 |
+- 你经常在多台 Windows 电脑之间玩同一个游戏。
+- 你有不少非 Steam 游戏、独立游戏、Galgame、模拟器游戏或手动安装游戏。
+- 你希望像 Steam Cloud 一样同步存档，但又想自己掌控云端存储。
+- 你想给重要存档留手动备份和自动备份，必要时可以回滚。
+- 你想给游戏库补封面、标签、简介，并在一个界面里启动和整理。
 
-## 功能特性
+## 主要功能
 
-### Steam Cloud 风格同步
+### 存档同步
 
-- 基于 `base / local / remote` 三方 manifest 判断变化来源。
-- 支持仅本地变化时上传、仅云端变化时下载、双方一致时自动接受。
-- 双方同时修改且结果不一致时进入冲突处理，由用户选择保留本地或云端。
-- 每个游戏有独立同步锁，避免重复点击或并发任务写坏同一份存档。
-
-### Cloudflare D1 + R2
-
-- D1 保存游戏目录、账号目录、当前 manifest、版本号和修订信息。
-- R2 保存真实存档文件对象，按内容哈希组织，重复文件不会反复上传。
-- 支持多个 Cloudflare 账号，每个游戏可以绑定不同 R2 Bucket。
-- 删除游戏或更新 manifest 后，会清理不再被引用的陈旧 R2 对象。
-
-### 桌面游戏库
-
-- 以卡片视图管理游戏，支持常玩、标签、搜索和排序。
-- 支持 RAWG 游戏资料搜索，自动补充简介、发行时间、评分和标签。
-- 支持 SteamGridDB 封面搜索，快速补齐竖版封面。
-- 支持启动游戏并记录游玩时长，结束后可自动创建最新备份。
+- 为每个游戏指定本地存档目录。
+- 手动同步，或在启动游戏前自动检查云端是否有新存档。
+- 只上传发生变化的文件，减少重复上传和存储占用。
+- 本地和云端都改动时，会提示冲突，由你选择保留本地或云端。
 
 ### 备份与恢复
 
-- 支持为单个游戏创建自定义名称的存档备份。
-- 支持从备份恢复指定存档版本。
-- 支持导出和导入软件配置，迁移游戏列表、账号和偏好。
-- 主账号可保存加密凭据备份，用于新设备恢复配置。
+- 给单个游戏创建手动备份。
+- 游戏结束后可生成自动备份。
+- 从备份恢复到指定版本。
+- 配置备份可用于迁移游戏列表、账号设置和偏好。
 
-### 安全更新
+### 游戏库整理
 
-- GitHub tag 会触发云端构建，自动发布一个包含主程序和 updater 的 Windows ZIP。
-- 程序内检查更新时只接受 HTTPS GitHub Release 下载地址。
-- 下载包会校验文件大小和 SHA256。
-- updater 解压时会阻止路径逃逸，并在替换失败时回滚。
+- 以卡片形式管理游戏。
+- 支持标签、常玩游戏、搜索和排序。
+- 可记录游玩时长和最近游玩时间。
+- 可使用 RAWG 补充游戏资料，使用 SteamGridDB 搜索竖版封面。
 
-## 快速开始
+### 自动更新
 
-### 1. 下载程序
+- 在程序内点击“检查更新”即可查看新版本。
+- 下载完成后点击“更新并重启”，程序会自动替换文件并重新打开。
+- 更新包会校验文件大小和 SHA256，降低损坏包或错误包带来的风险。
 
-前往 [Releases](https://github.com/MengStar-L/GameSync/releases/latest)，下载最新的 Windows 包：
+## 下载安装
+
+1. 打开 [最新版本下载页](https://github.com/MengStar-L/GameSync/releases/latest)。
+2. 下载 Windows 压缩包：
 
 ```text
 GameSync-vX.Y.Z-windows-amd64.zip
 ```
 
-解压后运行：
+3. 解压到一个普通目录，例如：
+
+```text
+D:\Apps\GameSync
+```
+
+4. 双击运行：
 
 ```text
 GameSync.exe
 ```
 
-### 2. 准备 Cloudflare
+为了让程序内自动更新顺利工作，建议把整个解压目录保留在一起，不要单独移动或删除其中的更新器文件。也建议不要放在 `C:\Program Files` 这类需要管理员权限的目录里。
 
-你需要准备至少一个 Cloudflare 账号，并创建：
+## 首次配置
 
-| 项目 | 用途 |
+GameSync 使用 Cloudflare D1 保存游戏目录和同步索引，使用 Cloudflare R2 保存真实存档文件、封面和备份。第一次使用前，你需要准备一个 Cloudflare 账号。
+
+### 需要准备的内容
+
+| 需要复制的字段 | 在 GameSync 中的用途 |
 | --- | --- |
-| Account ID | 访问 D1 与 R2 的账号标识 |
-| API Token | 主账号访问 D1、验证账号和同步目录 |
-| D1 Database ID | 保存游戏配置、manifest 和同步索引 |
+| Account ID | 标识你的 Cloudflare 账号 |
+| API Token | 主账号访问 D1、验证账号、同步目录 |
+| D1 Database ID | 保存游戏列表、同步版本和云端索引 |
 | R2 Bucket | 保存存档对象、封面缓存和备份文件 |
-| R2 Access Key ID | 以 S3 兼容协议访问 R2 |
-| R2 Secret Access Key | R2 写入与下载所需密钥 |
+| R2 Access Key ID | 上传和下载 R2 文件 |
+| R2 Secret Access Key | 上传和下载 R2 文件 |
 
-首次启动时可以按欢迎引导添加主账号；后续可在“账号”页面继续添加副账号。
+第一次添加的 Cloudflare 账号会作为主账号。后续你也可以继续添加副账号，把不同游戏放到不同 R2 Bucket 中。
 
-### 3. 添加游戏
+### 可选 API Key
 
-在主界面点击“添加游戏”，填写：
-
-| 字段 | 说明 |
+| API Key | 作用 |
 | --- | --- |
-| 游戏名称 | 面板显示名称 |
-| 启动文件 | 游戏 `.exe` 或其他启动入口 |
-| 存档目录 | 需要同步的本地存档文件夹 |
-| 同步账号 | 此游戏使用的 Cloudflare 存储账号 |
+| RAWG API Key | 搜索游戏资料、简介、评分、发行时间和标签 |
+| SteamGridDB API Key | 搜索游戏竖版封面 |
+
+这两个 API Key 不是同步存档必需的，只影响游戏资料和封面搜索。
+
+## 添加游戏
+
+在主界面点击“添加游戏”，通常只需要确认这些内容：
+
+| 字段 | 怎么填 |
+| --- | --- |
+| 游戏名称 | 在 GameSync 中显示的名字 |
+| 启动文件 | 游戏的 `.exe` 或启动入口 |
+| 存档目录 | 真正需要同步的存档文件夹 |
+| 封面 | 可以选本地图片，也可以用 RAWG / SteamGridDB 搜索 |
+| 同步账号 | 此游戏使用哪个 Cloudflare 存储账号 |
 | 冲突策略 | 手动选择、本地优先或云端优先 |
 
-保存后即可进行首次同步。
+保存后，可以先点一次“手动同步”，让云端生成第一份同步记录。之后再在另一台电脑上添加同一个游戏并同步，就能拉取云端存档。
 
-## 同步架构
+## 日常使用
 
-GameSync 的同步核心是“本地扫描 + 云端索引 + 内容对象”的组合。
+### 手动同步
 
-| 层级 | 保存内容 | 位置 |
-| --- | --- | --- |
-| 本地状态 | 游戏列表、账号、偏好、同步锚点、窗口状态 | `%AppData%/GameSync` |
-| D1 索引 | catalog、manifest、版本号、revision 历史 | Cloudflare D1 |
-| R2 对象 | 存档文件、封面、备份 ZIP 或目录对象 | Cloudflare R2 |
+进入游戏卡片或右键菜单，点击“立即同步”。GameSync 会扫描本地存档目录，和云端记录对比后自动上传或下载变化。
 
-同步时会生成当前存档目录的 manifest，并与上次成功同步保存的 anchor、D1 中的 remote manifest 比较：
+### 启动前同步
 
-| 判断结果 | 行为 |
+如果开启启动前同步，GameSync 会在启动游戏前先检查云端状态：
+
+| 检查结果 | 会发生什么 |
 | --- | --- |
-| 只有本地变化 | 上传新对象，提交新的 D1 manifest |
-| 只有云端变化 | 下载缺失对象，替换本地存档 |
-| 本地与云端相同 | 更新锚点，无需传输 |
-| 双方都变化且不一致 | 标记冲突，等待用户选择 |
+| 只有本地变化 | 上传本地存档到云端 |
+| 只有云端变化 | 下载云端存档到本地 |
+| 本地和云端一致 | 直接启动游戏 |
+| 两边都改过 | 提示冲突，等待你选择 |
 
-## 自动更新
+### 备份存档
 
-GameSync 使用 GitHub Releases 作为稳定更新通道。
+打开游戏详情里的“存档备份”，可以创建新备份、查看已有备份，或恢复到某个备份版本。恢复前会覆盖当前本地存档，请确认当前进度是否还需要保留。
 
-1. 推送形如 `v0.1.1` 的 tag。
-2. GitHub Actions 构建 `GameSync.exe` 与 `gamesync-updater.exe`。
-3. 发布 `GameSync-v0.1.1-windows-amd64.zip`、`latest.json` 和 `checksums.txt`。
-4. 程序内点击“检查更新”，发现新版本后下载并校验。
-5. 点击“更新并重启”，updater 会替换程序文件并重新启动 GameSync。
+### 更新程序
 
-发布细节见 [`docs/release.md`](./docs/release.md)。
+进入“设置 -> 软件更新”，点击“检查更新”。如果有新版本，下载后点击“更新并重启”即可。
 
-## 开发构建
+## 数据安全
 
-### 环境要求
+GameSync 会尽量避免把敏感内容暴露到不该出现的位置：
 
-| 工具 | 版本 |
-| --- | --- |
-| Go | 1.22+ |
-| Node.js | 20+ |
-| Wails CLI | v2.12.0+ |
+- 本地 `state.json` 中的 Cloudflare Token、R2 密钥、RAWG Key、SteamGridDB Key 会进行本机保护。
+- 导出的配置备份不会包含明文密钥。
+- 云端目录不会保存 Cloudflare Token、R2 Secret、本地安装路径或本地封面缓存路径。
+- 存档备份恢复前会校验文件哈希，并阻止压缩包内路径逃逸。
+- 同步下载失败时，会尝试回滚本地已替换或已删除的文件。
 
-### 本地运行
+仍然建议你妥善保管 Cloudflare API Token、R2 Access Key、恢复密码和配置备份文件。
 
-```powershell
-git clone https://github.com/MengStar-L/GameSync.git
-cd GameSync
+## 常见问题
 
-cd frontend
-npm install
-npm run build
-cd ..
+### 必须使用 Cloudflare 吗？
 
-go test ./...
-wails dev
-```
+目前是的。GameSync 的云端目录使用 Cloudflare D1，存档文件使用 Cloudflare R2。
 
-### 生成可执行文件
+### 可以只在本机使用吗？
 
-```powershell
-wails build -clean
-```
+可以。你可以把它当作游戏库和本地备份工具使用；但云端同步、跨设备恢复和自动同步需要 Cloudflare 配置完整。
 
-构建产物会生成到：
+### 为什么提示同步冲突？
 
-```text
-build/bin/GameSync.exe
-```
+通常是因为两台设备都在上一次成功同步之后改过同一个游戏的存档。此时请选择你想保留的一侧：本地代表当前电脑，云端代表远端记录。
 
-### 本地打包 Release
+### 为什么检查更新显示“未配置更新源”？
 
-```powershell
-go build -trimpath -ldflags "-s -w" -o build/bin/gamesync-updater.exe ./cmd/gamesync-updater
-.\scripts\package-release.ps1 -Version "0.1.0" -Platform "windows-amd64"
-```
+这通常说明你运行的不是完整正式发布包，或只单独复制了主程序文件。请从 GitHub Releases 下载完整压缩包，并保留解压后的目录结构。
 
-## 目录速览
+### RAWG 或 SteamGridDB 搜索失败怎么办？
 
-```text
-app.go                         # Wails 绑定层、调度、窗口、托盘与运行时事件
-internal/core/sync.go          # 存档同步引擎
-internal/core/cloudflare.go    # D1 / R2 客户端与云端 catalog
-internal/core/updater.go       # 程序内更新检查、下载与启动 updater
-cmd/gamesync-updater/          # 独立更新器进程
-frontend/                      # Vite 前端界面
-scripts/                       # Release 打包与 latest.json 生成脚本
-.github/workflows/release.yml  # tag 触发的 GitHub Release 构建流程
-```
+先确认你在“设置 -> 同步偏好”中填写了对应 API Key。存档同步不依赖这两个服务，即使不填写也可以正常同步和备份。
 
-## 技术栈
+### 我应该同步哪个目录？
 
-| 层级 | 技术 |
-| --- | --- |
-| 桌面框架 | Wails v2 |
-| 后端 | Go |
-| 前端 | Vite, Vanilla JavaScript, CSS, Lucide Icons |
-| 云端索引 | Cloudflare D1 |
-| 对象存储 | Cloudflare R2, S3 compatible API |
-| 更新分发 | GitHub Actions, GitHub Releases |
-
-## 使用提示
-
-- `state.json`、`.env`、本地构建产物和密钥文件不应提交到仓库。
-- 第一次同步前建议先确认存档目录是否正确，避免把游戏安装目录误当作存档目录。
-- 如果多台设备同时修改同一游戏存档，优先使用手动冲突处理，确认后再覆盖。
-- 本地开发构建默认没有更新源；只有 GitHub Actions 注入版本与更新地址后，程序内更新才会启用。
+请选择游戏真正写入存档的文件夹，不要选择游戏安装目录。第一次同步前建议先打开目录确认里面确实是存档文件。
 
 ---
 
 <p align="center">
-  <sub>Made for a calmer game library and fewer lost saves.</sub>
+  <sub>Made for calmer game saves, cleaner libraries, and fewer lost evenings.</sub>
 </p>
