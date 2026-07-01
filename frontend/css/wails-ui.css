@@ -1085,6 +1085,25 @@
   color: var(--text-primary);
 }
 
+.tag-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tag-card-pin {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.tag-card-pin svg {
+  width: 14px;
+  height: 14px;
+}
+
 .game-card {
   position: relative;
   border-radius: var(--radius-lg);

@@ -319,6 +319,7 @@ func (c *D1Client) SaveRemoteCatalog(ctx context.Context, catalog RemoteCatalog,
 	preferencesUpdatedAt := maxTime(
 		sharedPreferences.FavoriteGamesUpdatedAt,
 		sharedPreferences.TagOrderUpdatedAt,
+		sharedPreferences.PinnedTagsUpdatedAt,
 		sharedPreferences.GameOrderUpdatedAt,
 	)
 	if preferencesUpdatedAt.IsZero() {
@@ -391,6 +392,7 @@ func remoteCatalogPreferences(preferences *RemotePreferences) *RemotePreferences
 	shared.SteamGridDBAPIKeyUpdatedAt = time.Time{}
 	shared.FavoriteGames = normalizeStringList(shared.FavoriteGames)
 	shared.TagOrder = normalizeStringList(shared.TagOrder)
+	shared.PinnedTags = normalizeStringList(shared.PinnedTags)
 	return &shared
 }
 

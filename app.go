@@ -2462,6 +2462,8 @@ func (a *App) syncRemoteCatalog() error {
 		Preferences: &core.RemotePreferences{
 			TagOrder:               state.Preferences.TagOrder,
 			TagOrderUpdatedAt:      state.Preferences.TagOrderUpdatedAt,
+			PinnedTags:             state.Preferences.PinnedTags,
+			PinnedTagsUpdatedAt:    state.Preferences.PinnedTagsUpdatedAt,
 			FavoriteGames:          state.Preferences.FavoriteGames,
 			FavoriteGamesUpdatedAt: state.Preferences.FavoriteGamesUpdatedAt,
 			GameOrderUpdatedAt:     state.Preferences.GameOrderUpdatedAt,

@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>GameSync</title>
-  <script type="module" crossorigin src="/assets/index-Cb4dlbI0.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-lLuCYnaW.css">
+  <script type="module" crossorigin src="/assets/index-DWimCULp.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-BZe9QPm9.css">
 </head>
 <body class="app-booting">
   <div id="app">
@@ -28,6 +28,7 @@
           <span class="icon-nav-icon" data-lucide="tags"></span>
           <span class="icon-nav-text">全部标签</span>
         </button>
+        <div class="pinned-tags-nav" id="pinned-tags-nav"></div>
         <button class="icon-nav-btn nav-btn" data-page="accounts">
           <span class="icon-nav-icon" data-lucide="cloud"></span>
           <span class="icon-nav-text">Cloudflare</span>
@@ -505,6 +506,11 @@
     <button class="context-menu-item" data-action="ctx-sync"><span data-lucide="refresh-cw"></span>立即同步</button>
     <div class="context-menu-divider"></div>
     <button class="context-menu-item context-menu-danger" data-action="ctx-delete"><span data-lucide="trash-2"></span>删除游戏</button>
+  </div>
+
+  <div id="tag-context-menu" class="context-menu" style="display:none;">
+    <button class="context-menu-item" data-action="ctx-pin-tag"><span id="ctx-menu-pin-icon" data-lucide="pin"></span><span id="ctx-menu-pin-text">固定到侧栏</span></button>
+    <button class="context-menu-item" data-action="ctx-view-tag"><span data-lucide="tags"></span>查看此标签</button>
   </div>
 
   <!-- 首次启动引导弹窗 -->

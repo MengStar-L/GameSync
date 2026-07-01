@@ -196,6 +196,59 @@ func TestMergeRemoteCatalogKeepsLocalAPIKeys(t *testing.T) {
 	}
 }
 
+func TestMergeRemoteCatalogPinnedTagsUsesNewestTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	localTime := time.Now()
+	remoteTime := localTime.Add(time.Hour)
+	store.state.Preferences.PinnedTags = []string{"local-tag"}
+	store.state.Preferences.PinnedTagsUpdatedAt = localTime
+
+	err = store.MergeRemoteCatalog(RemoteCatalog{
+		Preferences: &RemotePreferences{
+			PinnedTags:          []string{"remote-tag", "remote-tag", "other-tag"},
+			PinnedTagsUpdatedAt: remoteTime,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(store.state.Preferences.PinnedTags) != 2 ||
+		store.state.Preferences.PinnedTags[0] != "remote-tag" ||
+		store.state.Preferences.PinnedTags[1] != "other-tag" {
+		t.Fatalf("remote pinned tags were not merged and normalized: %+v", store.state.Preferences.PinnedTags)
+	}
+	if !store.state.Preferences.PinnedTagsUpdatedAt.Equal(remoteTime) {
+		t.Fatalf("remote pinned tag timestamp was not merged: %s", store.state.Preferences.PinnedTagsUpdatedAt)
+	}
+
+	newerLocal := remoteTime.Add(time.Hour)
+	store.state.Preferences.PinnedTags = []string{"newer-local-tag"}
+	store.state.Preferences.PinnedTagsUpdatedAt = newerLocal
+	err = store.MergeRemoteCatalog(RemoteCatalog{
+		Preferences: &RemotePreferences{
+			PinnedTags:          []string{"older-remote-tag"},
+			PinnedTagsUpdatedAt: remoteTime,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(store.state.Preferences.PinnedTags) != 1 ||
+		store.state.Preferences.PinnedTags[0] != "newer-local-tag" {
+		t.Fatalf("older remote pinned tags overwrote local value: %+v", store.state.Preferences.PinnedTags)
+	}
+	if !store.state.Preferences.PinnedTagsUpdatedAt.Equal(newerLocal) {
+		t.Fatalf("older remote pinned tag timestamp overwrote local timestamp: %s", store.state.Preferences.PinnedTagsUpdatedAt)
+	}
+}
+
 func TestSafeSaveFilePathRejectsEscapes(t *testing.T) {
 	root := t.TempDir()
 	if _, err := safeSaveFilePath(root, "profile/save.dat"); err != nil {

@@ -430,6 +430,10 @@ func (s *Store) MergeRemoteCatalog(catalog RemoteCatalog) error {
 		s.state.Preferences.TagOrder = normalizeStringList(catalog.Preferences.TagOrder)
 		s.state.Preferences.TagOrderUpdatedAt = catalog.Preferences.TagOrderUpdatedAt
 	}
+	if catalog.Preferences != nil && !s.state.Preferences.PinnedTagsUpdatedAt.After(catalog.Preferences.PinnedTagsUpdatedAt) {
+		s.state.Preferences.PinnedTags = normalizeStringList(catalog.Preferences.PinnedTags)
+		s.state.Preferences.PinnedTagsUpdatedAt = catalog.Preferences.PinnedTagsUpdatedAt
+	}
 	if catalog.Preferences != nil && !s.state.Preferences.FavoriteGamesUpdatedAt.After(catalog.Preferences.FavoriteGamesUpdatedAt) {
 		s.state.Preferences.FavoriteGames = normalizeStringList(catalog.Preferences.FavoriteGames)
 		s.state.Preferences.FavoriteGamesUpdatedAt = catalog.Preferences.FavoriteGamesUpdatedAt
@@ -631,6 +635,7 @@ func (s *Store) SavePreferences(preferences Preferences) error {
 	preferences.SteamGridDBAPIKey = strings.TrimSpace(preferences.SteamGridDBAPIKey)
 	preferences.FavoriteGames = normalizeStringList(preferences.FavoriteGames)
 	preferences.TagOrder = normalizeStringList(preferences.TagOrder)
+	preferences.PinnedTags = normalizeStringList(preferences.PinnedTags)
 
 	if preferences.StartupSyncMode == "" {
 		preferences.StartupSyncMode = "smart"
@@ -657,6 +662,11 @@ func (s *Store) SavePreferences(preferences Preferences) error {
 		preferences.TagOrderUpdatedAt = time.Now()
 	} else if preferences.TagOrderUpdatedAt.IsZero() {
 		preferences.TagOrderUpdatedAt = s.state.Preferences.TagOrderUpdatedAt
+	}
+	if !equalStringSlices(s.state.Preferences.PinnedTags, preferences.PinnedTags) {
+		preferences.PinnedTagsUpdatedAt = time.Now()
+	} else if preferences.PinnedTagsUpdatedAt.IsZero() {
+		preferences.PinnedTagsUpdatedAt = s.state.Preferences.PinnedTagsUpdatedAt
 	}
 	if preferences.GameOrderUpdatedAt.IsZero() {
 		preferences.GameOrderUpdatedAt = s.state.Preferences.GameOrderUpdatedAt

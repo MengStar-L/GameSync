@@ -58,6 +58,8 @@ import {
   Play,
   Archive,
   Info,
+  Pin,
+  PinOff,
   Trash2,
   CheckCircle,
   XCircle,
@@ -98,6 +100,8 @@ const LUCIDE_ICONS = {
   Play,
   Archive,
   Info,
+  Pin,
+  PinOff,
   Trash2,
   CheckCircle,
   XCircle,
@@ -448,6 +452,7 @@ const App = {
   cacheDom() {
     this.dom = {
       sidebar: document.getElementById("icon-sidebar"),
+      pinnedTagsNav: document.getElementById("pinned-tags-nav"),
       pageTitle: document.getElementById("page-title"),
       searchInput: document.getElementById("global-search-input"),
       searchClear: document.getElementById("search-clear-btn"),
@@ -1085,9 +1090,13 @@ const App = {
 
   bindEvents() {
     document.addEventListener("contextmenu", (event) => {
-      if (!event.target.closest(".game-card[data-game-id]")) {
+      if (
+        !event.target.closest(".game-card[data-game-id]") &&
+        !event.target.closest(".tag-card[data-tag]")
+      ) {
         event.preventDefault();
         this.hideGameContextMenu();
+        this.hideTagContextMenu();
       }
     });
 
@@ -1127,6 +1136,18 @@ const App = {
       .addEventListener("click", (event) =>
         this.handleContextMenuAction(event),
       );
+    this.dom.tagsGrid.addEventListener("contextmenu", (event) =>
+      this.showTagContextMenu(event),
+    );
+    document.addEventListener("click", () => this.hideTagContextMenu());
+    document
+      .getElementById("tag-context-menu")
+      .addEventListener("click", (event) =>
+        this.handleTagContextMenuAction(event),
+      );
+    this.dom.pinnedTagsNav?.addEventListener("click", (event) =>
+      this.handlePinnedTagNavClick(event),
+    );
     this.dom.tagsGrid.addEventListener("click", (event) =>
       this.handleTagGridClick(event),
     );
@@ -2042,6 +2063,20 @@ const App = {
     );
   },
 
+  normalizeStringList(values = []) {
+    const seen = new Set();
+    const normalized = [];
+    (Array.isArray(values) ? values : []).forEach((value) => {
+      const item = String(value || "").trim();
+      if (!item || seen.has(item)) {
+        return;
+      }
+      seen.add(item);
+      normalized.push(item);
+    });
+    return normalized;
+  },
+
   loadFavoriteGames() {
     try {
       this.state.favoriteGames = JSON.parse(
@@ -2073,6 +2108,18 @@ const App = {
       this.state.favoriteGames = filtered;
     }
     this.saveFavoriteGames();
+  },
+
+  getPinnedTags() {
+    return this.normalizeStringList(this.getState().preferences?.pinnedTags || []);
+  },
+
+  isPinnedTag(tag) {
+    return this.getPinnedTags().includes(String(tag || "").trim());
+  },
+
+  getAllTagSummaries() {
+    return this.collectTagSummaries(this.getState().games || []);
   },
 
   rememberPendingDeletedGame(game) {
@@ -2538,6 +2585,18 @@ const App = {
       didRender = true;
     }
     if (
+      JSON.stringify(previousState.preferences?.pinnedTags || []) !==
+        JSON.stringify(nextState.preferences?.pinnedTags || []) ||
+      JSON.stringify(this.collectTagSummaries(previousState.games || []).map((tag) => tag.name)) !==
+        JSON.stringify(this.collectTagSummaries(nextState.games || []).map((tag) => tag.name))
+    ) {
+      this.renderPinnedTagsNav();
+      if (this.state.page === "all-tags") {
+        this.renderTagsPage();
+      }
+      didRender = true;
+    }
+    if (
       this.state.page === "accounts" &&
       JSON.stringify(previousState.accounts || []) !==
         JSON.stringify(nextState.accounts || [])
@@ -2862,11 +2921,13 @@ const App = {
       steamGridDbApiKey: preferences.steamGridDbApiKey || "",
       favoriteGames: preferences.favoriteGames || [],
       tagOrder: preferences.tagOrder || [],
+      pinnedTags: preferences.pinnedTags || [],
     };
   },
 
   renderDataViews(options = {}) {
     this.renderPageState();
+    this.renderPinnedTagsNav();
     this.renderGames();
     this.renderFavoriteGames();
     this.renderTagsPage();
@@ -2893,6 +2954,7 @@ const App = {
   render() {
     this.syncFavoriteGamesWithState();
     this.renderPageState();
+    this.renderPinnedTagsNav();
     this.renderGames();
     this.renderFavoriteGames();
     this.renderTagsPage();
@@ -2984,10 +3046,46 @@ const App = {
         button.dataset.page === this.state.page,
       );
     });
+    document.querySelectorAll(".pinned-tag-nav-btn").forEach((button) => {
+      button.classList.toggle(
+        "active",
+        this.state.page === "all-games" &&
+          this.state.filterTag === button.dataset.tag,
+      );
+    });
 
     Object.entries(this.dom.pages).forEach(([page, element]) => {
       element.style.display = page === this.state.page ? "block" : "none";
     });
+  },
+
+  renderPinnedTagsNav() {
+    if (!this.dom.pinnedTagsNav) {
+      return;
+    }
+    const availableTags = new Set(this.getAllTagSummaries().map((tag) => tag.name));
+    const pinnedTags = this.getPinnedTags().filter((tag) => availableTags.has(tag));
+    if (!pinnedTags.length) {
+      this.dom.pinnedTagsNav.innerHTML = "";
+      this.dom.pinnedTagsNav.style.display = "none";
+      return;
+    }
+    this.dom.pinnedTagsNav.style.display = "";
+    this.dom.pinnedTagsNav.innerHTML = pinnedTags
+      .map(
+        (tag) => `
+          <button
+            type="button"
+            class="icon-nav-btn pinned-tag-nav-btn${this.state.page === "all-games" && this.state.filterTag === tag ? " active" : ""}"
+            data-tag="${this.escapeHtmlAttribute(tag)}"
+            title="${this.escapeHtmlAttribute(tag)}"
+          >
+            <span class="icon-nav-icon" data-lucide="pin"></span>
+            <span class="icon-nav-text">${this.escapeHtml(tag)}</span>
+          </button>
+        `,
+      )
+      .join("");
   },
 
   renderGames() {
@@ -3901,13 +3999,14 @@ const App = {
     const tagIndex = this.filterTags(
       this.collectTagSummaries(this.getState().games || []),
     ).findIndex((item) => item.name === summary.name);
+    const isPinned = this.isPinnedTag(summary.name);
     return `
-      <article class="tag-card" data-render-key="${this.escapeHtmlAttribute(summary.name)}" data-tag="${this.escapeHtmlAttribute(summary.name)}" data-index="${tagIndex}">
+      <article class="tag-card${isPinned ? " is-pinned" : ""}" data-render-key="${this.escapeHtmlAttribute(summary.name)}" data-tag="${this.escapeHtmlAttribute(summary.name)}" data-index="${tagIndex}">
         <div class="tag-card-head">
           <div style="display:flex; align-items:center; gap:12px; min-width:0;">
             <div class="tag-card-icon">${this.icon("tags", "tag-card-icon-svg")}</div>
             <div style="min-width:0;">
-              <div class="tag-card-title">${this.escapeHtml(summary.name)}</div>
+              <div class="tag-card-title">${this.escapeHtml(summary.name)}${isPinned ? `<span class="tag-card-pin" title="已固定到侧栏">${this.icon("pin")}</span>` : ""}</div>
               <div class="tag-card-meta">${summary.syncedCount} 个游戏有最近同步记录</div>
             </div>
           </div>
@@ -4234,6 +4333,7 @@ const App = {
     const article = event.target.closest(".game-card[data-game-id]");
     if (!article?.dataset.gameId) return;
 
+    this.hideTagContextMenu();
     this.state.contextMenuGameId = article.dataset.gameId;
     const isFav = this.isFavoriteGame(article.dataset.gameId);
 
@@ -4280,12 +4380,69 @@ const App = {
     }
   },
 
+  showTagContextMenu(event) {
+    event.preventDefault();
+    const article = event.target.closest(".tag-card[data-tag]");
+    if (!article?.dataset.tag) return;
+
+    this.hideGameContextMenu();
+    this.state.contextMenuTag = article.dataset.tag;
+    const isPinned = this.isPinnedTag(article.dataset.tag);
+
+    const pinTextNode = document.getElementById("ctx-menu-pin-text");
+    if (pinTextNode) {
+      pinTextNode.textContent = isPinned ? "取消固定" : "固定到侧栏";
+    }
+    const pinIconNode = document.getElementById("ctx-menu-pin-icon");
+    if (pinIconNode) {
+      pinIconNode.dataset.lucide = isPinned ? "pin-off" : "pin";
+    }
+
+    const menu = document.getElementById("tag-context-menu");
+    menu.style.display = "block";
+    const x = Math.min(event.clientX, window.innerWidth - 180);
+    const y = Math.min(event.clientY, window.innerHeight - 120);
+    menu.style.left = x + "px";
+    menu.style.top = y + "px";
+    this.refreshIcons();
+  },
+
+  hideTagContextMenu() {
+    document.getElementById("tag-context-menu").style.display = "none";
+    this.state.contextMenuTag = "";
+  },
+
+  handleTagContextMenuAction(event) {
+    const btn = event.target.closest("[data-action]");
+    if (!btn) return;
+    const tag = this.state.contextMenuTag;
+    this.hideTagContextMenu();
+    if (!tag) return;
+
+    switch (btn.dataset.action) {
+      case "ctx-pin-tag":
+        this.togglePinnedTag(tag);
+        break;
+      case "ctx-view-tag":
+        this.openTagFilter(tag);
+        break;
+    }
+  },
+
   handleTagGridClick(event) {
     const card = event.target.closest(".tag-card[data-tag]");
     if (!card?.dataset.tag) {
       return;
     }
     this.openTagFilter(card.dataset.tag);
+  },
+
+  handlePinnedTagNavClick(event) {
+    const button = event.target.closest(".pinned-tag-nav-btn[data-tag]");
+    if (!button?.dataset.tag) {
+      return;
+    }
+    this.openTagFilter(button.dataset.tag);
   },
 
   handleAccountGridClick(event) {
@@ -4826,6 +4983,8 @@ const App = {
         ? this.dom.prefSgdbApiKey.value.trim()
         : current.steamGridDbApiKey || "",
       favoriteGames: [...this.state.favoriteGames],
+      tagOrder: current.tagOrder || [],
+      pinnedTags: current.pinnedTags || [],
       ...overrides,
     };
   },
@@ -5999,6 +6158,58 @@ const App = {
 
   isFavoriteGame(gameId) {
     return this.state.favoriteGames.includes(gameId);
+  },
+
+  async togglePinnedTag(tag) {
+    const tagName = String(tag || "").trim();
+    if (!tagName) {
+      return;
+    }
+    const currentPinnedTags = this.getPinnedTags();
+    const isPinned = currentPinnedTags.includes(tagName);
+    const nextPinnedTags = isPinned
+      ? currentPinnedTags.filter((item) => item !== tagName)
+      : [tagName, ...currentPinnedTags];
+
+    if (this.sameStringSlices(nextPinnedTags, currentPinnedTags)) {
+      return;
+    }
+
+    const previousSnapshot = this.state.snapshot
+      ? JSON.parse(JSON.stringify(this.state.snapshot))
+      : null;
+    const currentState = this.getState();
+    if (this.state.snapshot?.state) {
+      this.state.snapshot.state.preferences = {
+        ...(currentState.preferences || {}),
+        pinnedTags: nextPinnedTags,
+      };
+      this.markLocalSnapshotEchoCandidate();
+    }
+    this.renderPinnedTagsNav();
+    this.renderTagsPage();
+    this.refreshIcons();
+
+    try {
+      const snapshot = await this.bridge.SavePreferences(
+        this.buildPreferencesPayload({
+          pinnedTags: nextPinnedTags,
+        }),
+      );
+      this.applySnapshot(snapshot, { renderSettings: true });
+      this.showToast(isPinned ? "已取消固定标签" : "已固定到侧栏", "success");
+      this.updateNetworkStatus("online", "固定标签已同步");
+    } catch (error) {
+      if (previousSnapshot) {
+        this.applySnapshot(previousSnapshot, { renderSettings: true });
+      }
+      console.error(error);
+      this.showToast(error.message || "固定标签同步失败", "error");
+      this.updateNetworkStatus(
+        "offline",
+        error.message || "固定标签同步失败",
+      );
+    }
   },
 
   onSearchInput(event) {

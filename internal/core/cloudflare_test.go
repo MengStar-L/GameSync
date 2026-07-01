@@ -16,6 +16,8 @@ func TestRemoteCatalogPreferencesStripsAPIKeys(t *testing.T) {
 		FavoriteGamesUpdatedAt:     now,
 		TagOrder:                   []string{"tag-a", "tag-a"},
 		TagOrderUpdatedAt:          now,
+		PinnedTags:                 []string{"tag-a", "tag-a", "tag-b"},
+		PinnedTagsUpdatedAt:        now,
 		GameOrderUpdatedAt:         now,
 	})
 
@@ -30,6 +32,9 @@ func TestRemoteCatalogPreferencesStripsAPIKeys(t *testing.T) {
 	}
 	if len(preferences.TagOrder) != 1 || preferences.TagOrder[0] != "tag-a" {
 		t.Fatalf("tag order was not preserved and normalized: %+v", preferences.TagOrder)
+	}
+	if len(preferences.PinnedTags) != 2 || preferences.PinnedTags[0] != "tag-a" || preferences.PinnedTags[1] != "tag-b" {
+		t.Fatalf("pinned tags were not preserved and normalized: %+v", preferences.PinnedTags)
 	}
 }
 
