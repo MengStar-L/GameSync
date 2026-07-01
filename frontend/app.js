@@ -4328,6 +4328,18 @@ const App = {
     }
   },
 
+  openContextMenu(menu, event, maxWidth, maxHeight) {
+    if (!menu) return;
+
+    menu.style.display = "none";
+    const x = Math.min(event.clientX, window.innerWidth - maxWidth);
+    const y = Math.min(event.clientY, window.innerHeight - maxHeight);
+    menu.style.left = x + "px";
+    menu.style.top = y + "px";
+    void menu.offsetHeight;
+    menu.style.display = "block";
+  },
+
   showGameContextMenu(event) {
     event.preventDefault();
     const article = event.target.closest(".game-card[data-game-id]");
@@ -4344,12 +4356,8 @@ const App = {
     }
 
     const menu = document.getElementById("game-context-menu");
-    menu.style.display = "block";
-    const x = Math.min(event.clientX, window.innerWidth - 180);
-    const y = Math.min(event.clientY, window.innerHeight - 220);
-    menu.style.left = x + "px";
-    menu.style.top = y + "px";
     this.refreshIcons();
+    this.openContextMenu(menu, event, 180, 220);
   },
 
   hideGameContextMenu() {
@@ -4399,12 +4407,8 @@ const App = {
     }
 
     const menu = document.getElementById("tag-context-menu");
-    menu.style.display = "block";
-    const x = Math.min(event.clientX, window.innerWidth - 180);
-    const y = Math.min(event.clientY, window.innerHeight - 120);
-    menu.style.left = x + "px";
-    menu.style.top = y + "px";
     this.refreshIcons();
+    this.openContextMenu(menu, event, 180, 120);
   },
 
   hideTagContextMenu() {
