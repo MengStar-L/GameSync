@@ -29,6 +29,7 @@
   SavePreferences as WailsSavePreferences,
   SearchRAWGGames as WailsSearchRAWGGames,
   SearchSteamGridDBGames as WailsSearchSteamGridDBGames,
+  UpdateSidebarNavOrder as WailsUpdateSidebarNavOrder,
   UpdateTagOrder as WailsUpdateTagOrder,
   VerifyAccount as WailsVerifyAccount,
 } from "./wailsjs/go/main/App.js";
@@ -361,6 +362,12 @@ const RESERVED_PLATFORM_TAGS = new Set(["Steam 游戏", "第三方游戏"]);
 
 const R2_FREE_TIER_STORAGE_BYTES = 10 * 1024 * 1024 * 1024;
 
+const SIDEBAR_BUILTIN_NAV_ITEMS = [
+  { key: "page:all-games", page: "all-games", label: "全部游戏", icon: "gamepad-2" },
+  { key: "page:favorite-games", page: "favorite-games", label: "常玩游戏", icon: "heart" },
+  { key: "page:all-tags", page: "all-tags", label: "全部标签", icon: "tags" },
+];
+
 const App = {
   state: {
     page: "all-games",
@@ -452,7 +459,7 @@ const App = {
   cacheDom() {
     this.dom = {
       sidebar: document.getElementById("icon-sidebar"),
-      pinnedTagsNav: document.getElementById("pinned-tags-nav"),
+      sidebarTopNav: document.getElementById("sidebar-top-nav"),
       pageTitle: document.getElementById("page-title"),
       searchInput: document.getElementById("global-search-input"),
       searchClear: document.getElementById("search-clear-btn"),
@@ -564,6 +571,7 @@ const App = {
         PickFolder: WailsPickFolder,
         PickFile: WailsPickFile,
         OpenPath: WailsOpenPath,
+        UpdateSidebarNavOrder: WailsUpdateSidebarNavOrder,
         UpdateTagOrder: WailsUpdateTagOrder,
         VerifyAccount: WailsVerifyAccount,
         SearchRAWGGames: WailsSearchRAWGGames,
@@ -680,6 +688,10 @@ const App = {
           conflictPolicy: "manual",
           rawgApiKey: "preview-rawg-key",
           steamGridDbApiKey: "preview-sgdb-key",
+          favoriteGames: [],
+          tagOrder: [],
+          pinnedTags: ["第三方游戏"],
+          sidebarNavOrder: [],
         },
         recoveryStatus: {
           hasRecoveryPassword: true,
@@ -1026,6 +1038,10 @@ const App = {
         mockSnapshot.state.preferences.tagOrder = tags;
         return clone(mockSnapshot);
       },
+      async UpdateSidebarNavOrder(items) {
+        mockSnapshot.state.preferences.sidebarNavOrder = items;
+        return clone(mockSnapshot);
+      },
       async SearchRAWGGames(query) {
         const normalized = String(query || "")
           .trim()
@@ -1092,7 +1108,8 @@ const App = {
     document.addEventListener("contextmenu", (event) => {
       if (
         !event.target.closest(".game-card[data-game-id]") &&
-        !event.target.closest(".tag-card[data-tag]")
+        !event.target.closest(".tag-card[data-tag]") &&
+        !event.target.closest(".pinned-tag-nav-btn[data-tag]")
       ) {
         event.preventDefault();
         this.hideGameContextMenu();
@@ -1103,6 +1120,12 @@ const App = {
     document
       .getElementById("menu-toggle")
       .addEventListener("click", () => this.toggleSidebar());
+    this.dom.sidebarTopNav?.addEventListener("click", (event) =>
+      this.handleSidebarTopNavClick(event),
+    );
+    this.dom.sidebarTopNav?.addEventListener("contextmenu", (event) =>
+      this.showTagContextMenu(event),
+    );
     document.querySelectorAll(".nav-btn").forEach((button) => {
       button.addEventListener("click", () => this.setPage(button.dataset.page));
     });
@@ -1145,8 +1168,11 @@ const App = {
       .addEventListener("click", (event) =>
         this.handleTagContextMenuAction(event),
       );
-    this.dom.pinnedTagsNav?.addEventListener("click", (event) =>
-      this.handlePinnedTagNavClick(event),
+    document.addEventListener("pointerover", (event) =>
+      this.showSidebarTooltip(event),
+    );
+    document.addEventListener("pointerout", (event) =>
+      this.hideSidebarTooltip(event),
     );
     this.dom.tagsGrid.addEventListener("click", (event) =>
       this.handleTagGridClick(event),
@@ -1592,28 +1618,43 @@ const App = {
         ? "cubic-bezier(0.08, 0.82, 0.17, 1)"
         : "cubic-bezier(0.22, 1, 0.36, 1)";
 
-    const selectorForType = (type) =>
-      type === "game"
-        ? ".game-card:not(.drag-placeholder)"
-        : ".tag-card:not(.drag-placeholder)";
-    const targetSelectorForType = (type) =>
-      type === "game"
-        ? ".game-card:not(.drag-placeholder)"
-        : ".tag-card:not(.drag-placeholder)";
+    const selectorForType = (type) => {
+      if (type === "game") {
+        return ".game-card:not(.drag-placeholder)";
+      }
+      if (type === "sidebar") {
+        return ".sidebar-sortable-nav-btn:not(.drag-placeholder)";
+      }
+      return ".tag-card:not(.drag-placeholder)";
+    };
+    const targetSelectorForType = selectorForType;
     const containerForType = (type) =>
-      type === "game" ? "#games-grid, #favorite-games-grid" : "#tags-grid";
+      type === "game"
+        ? "#games-grid, #favorite-games-grid"
+        : type === "sidebar"
+          ? "#sidebar-top-nav"
+          : "#tags-grid";
     const keyForElement = (element) =>
-      element.dataset.gameId || element.dataset.tag || "";
-    const isInteractiveTarget = (element) =>
-      Boolean(element.closest("button, a, input, textarea, select"));
+      element.dataset.navKey ||
+      element.dataset.gameId ||
+      element.dataset.tag ||
+      "";
+    const isInteractiveTarget = (element) => {
+      if (element.closest(".sidebar-sortable-nav-btn")) {
+        return false;
+      }
+      return Boolean(element.closest("button, a, input, textarea, select"));
+    };
 
     const clearDragMarkers = () => {
-      document.querySelectorAll(".game-card, .tag-card").forEach((card) => {
-        card.classList.remove("dragging", "drag-over");
-        card.style.transition = "";
-        card.style.transform = "";
-        card.style.willChange = "";
-      });
+      document
+        .querySelectorAll(".game-card, .tag-card, .sidebar-sortable-nav-btn")
+        .forEach((card) => {
+          card.classList.remove("dragging", "drag-over");
+          card.style.transition = "";
+          card.style.transform = "";
+          card.style.willChange = "";
+        });
     };
 
     const cancelPendingFrame = () => {
@@ -1746,6 +1787,31 @@ const App = {
         this.markLocalSnapshotEchoCandidate();
       }
       this.bridge.UpdateTagOrder(tagNames).catch((error) =>
+        console.error(error),
+      );
+    };
+
+    const commitSidebarNavOrder = (container) => {
+      const navKeys = this.normalizeSidebarNavOrder(
+        Array.from(
+          container.querySelectorAll(
+            ".sidebar-sortable-nav-btn:not(.drag-placeholder)",
+          ),
+        ).map((button) => button.dataset.navKey),
+      );
+      const currentOrder = this.normalizeSidebarNavOrder(
+        this.getState().preferences?.sidebarNavOrder || [],
+      );
+      if (this.sameStringSlices(navKeys, currentOrder)) {
+        return;
+      }
+      if (this.state.snapshot) {
+        this.state.snapshot.state.preferences =
+          this.state.snapshot.state.preferences || {};
+        this.state.snapshot.state.preferences.sidebarNavOrder = navKeys;
+        this.markLocalSnapshotEchoCandidate();
+      }
+      this.bridge.UpdateSidebarNavOrder(navKeys).catch((error) =>
         console.error(error),
       );
     };
@@ -1929,18 +1995,23 @@ const App = {
         return;
       }
 
-      const card = event.target.closest(".game-card, .tag-card");
+      const card = event.target.closest(
+        ".game-card, .tag-card, .sidebar-sortable-nav-btn",
+      );
       if (!card || isInteractiveTarget(event.target)) {
         return;
       }
 
       potentialDragTarget = card;
-      dragContainer = card.closest(
-        card.classList.contains("game-card")
-          ? "#games-grid, #favorite-games-grid"
-          : "#tags-grid",
-      );
-      dragType = card.classList.contains("game-card") ? "game" : "tag";
+      dragType = card.classList.contains("game-card")
+        ? "game"
+        : card.classList.contains("sidebar-sortable-nav-btn")
+          ? "sidebar"
+          : "tag";
+      dragContainer = card.closest(containerForType(dragType));
+      if (!dragContainer) {
+        return;
+      }
       dragStartX = event.clientX;
       dragStartY = event.clientY;
       currentPointerX = event.clientX;
@@ -1969,6 +2040,7 @@ const App = {
         draggedElement = potentialDragTarget;
         potentialDragTarget = null;
         dragging = true;
+        this.hideSidebarTooltip();
         this.state.dragJustHappenedUntil = Date.now() + 500;
         const rect = draggedElement.getBoundingClientRect();
         pointerOffsetX = event.clientX - rect.left;
@@ -1983,6 +2055,9 @@ const App = {
         if (draggedElement.dataset.renderSignature) {
           draggedPlaceholder.dataset.renderSignature =
             draggedElement.dataset.renderSignature;
+        }
+        if (draggedElement.dataset.navKey) {
+          draggedPlaceholder.dataset.navKey = draggedElement.dataset.navKey;
         }
         draggedPlaceholder.style.width = `${rect.width}px`;
         draggedPlaceholder.style.height = `${rect.height}px`;
@@ -2035,6 +2110,8 @@ const App = {
         commitGameOrder(dragContainer);
       } else if (dragType === "tag") {
         commitTagOrder(dragContainer);
+      } else if (dragType === "sidebar") {
+        commitSidebarNavOrder(dragContainer);
       }
       this.state.dragJustHappenedUntil = Date.now() + 500;
       cleanup();
@@ -2057,6 +2134,7 @@ const App = {
   toggleSidebar() {
     this.state.sidebarExpanded = !this.state.sidebarExpanded;
     this.dom.sidebar.classList.toggle("expanded", this.state.sidebarExpanded);
+    this.hideSidebarTooltip();
     window.localStorage.setItem(
       STORAGE_KEYS.sidebar,
       String(this.state.sidebarExpanded),
@@ -2587,6 +2665,8 @@ const App = {
     if (
       JSON.stringify(previousState.preferences?.pinnedTags || []) !==
         JSON.stringify(nextState.preferences?.pinnedTags || []) ||
+      JSON.stringify(previousState.preferences?.sidebarNavOrder || []) !==
+        JSON.stringify(nextState.preferences?.sidebarNavOrder || []) ||
       JSON.stringify(this.collectTagSummaries(previousState.games || []).map((tag) => tag.name)) !==
         JSON.stringify(this.collectTagSummaries(nextState.games || []).map((tag) => tag.name))
     ) {
@@ -2922,6 +3002,7 @@ const App = {
       favoriteGames: preferences.favoriteGames || [],
       tagOrder: preferences.tagOrder || [],
       pinnedTags: preferences.pinnedTags || [],
+      sidebarNavOrder: preferences.sidebarNavOrder || [],
     };
   },
 
@@ -3043,7 +3124,7 @@ const App = {
     document.querySelectorAll(".nav-btn").forEach((button) => {
       button.classList.toggle(
         "active",
-        button.dataset.page === this.state.page,
+        button.dataset.page === this.state.page && !this.state.filterTag,
       );
     });
     document.querySelectorAll(".pinned-tag-nav-btn").forEach((button) => {
@@ -3059,33 +3140,130 @@ const App = {
     });
   },
 
-  renderPinnedTagsNav() {
-    if (!this.dom.pinnedTagsNav) {
-      return;
-    }
+  sidebarTagKey(tag) {
+    return `tag:${String(tag || "").trim()}`;
+  },
+
+  sidebarPageKey(page) {
+    return `page:${String(page || "").trim()}`;
+  },
+
+  normalizeSidebarNavOrder(order = [], pinnedTagsOverride = null) {
     const availableTags = new Set(this.getAllTagSummaries().map((tag) => tag.name));
-    const pinnedTags = this.getPinnedTags().filter((tag) => availableTags.has(tag));
-    if (!pinnedTags.length) {
-      this.dom.pinnedTagsNav.innerHTML = "";
-      this.dom.pinnedTagsNav.style.display = "none";
+    const validBuiltins = new Set(SIDEBAR_BUILTIN_NAV_ITEMS.map((item) => item.key));
+    const pinnedTags = this.normalizeStringList(
+      Array.isArray(pinnedTagsOverride) ? pinnedTagsOverride : this.getPinnedTags(),
+    ).filter((tag) => availableTags.has(tag));
+    const validTagKeys = new Set(pinnedTags.map((tag) => this.sidebarTagKey(tag)));
+    const seen = new Set();
+    const normalized = [];
+
+    this.normalizeStringList(order).forEach((key) => {
+      if (seen.has(key)) {
+        return;
+      }
+      if (validBuiltins.has(key) || validTagKeys.has(key)) {
+        seen.add(key);
+        normalized.push(key);
+      }
+    });
+
+    SIDEBAR_BUILTIN_NAV_ITEMS.forEach((item) => {
+      if (!seen.has(item.key)) {
+        seen.add(item.key);
+        normalized.push(item.key);
+      }
+    });
+    pinnedTags.forEach((tag) => {
+      const key = this.sidebarTagKey(tag);
+      if (!seen.has(key)) {
+        seen.add(key);
+        normalized.push(key);
+      }
+    });
+
+    return normalized;
+  },
+
+  sidebarNavItemForKey(key) {
+    const builtin = SIDEBAR_BUILTIN_NAV_ITEMS.find((item) => item.key === key);
+    if (builtin) {
+      return { ...builtin, type: "page" };
+    }
+    if (key.startsWith("tag:")) {
+      const tag = key.slice(4);
+      return {
+        key,
+        type: "tag",
+        tag,
+        label: tag,
+        icon: "pin",
+      };
+    }
+    return null;
+  },
+
+  renderPinnedTagsNav() {
+    if (!this.dom.sidebarTopNav) {
       return;
     }
-    this.dom.pinnedTagsNav.style.display = "";
-    this.dom.pinnedTagsNav.innerHTML = pinnedTags
-      .map(
-        (tag) => `
+    const preferences = this.getState().preferences || {};
+    const order = this.normalizeSidebarNavOrder(preferences.sidebarNavOrder || []);
+    this.dom.sidebarTopNav.innerHTML = order
+      .map((key) => this.sidebarNavItemForKey(key))
+      .filter(Boolean)
+      .map((item) => {
+        const isActive =
+          item.type === "tag"
+            ? this.state.page === "all-games" && this.state.filterTag === item.tag
+            : this.state.page === item.page && !this.state.filterTag;
+        const dataAttrs =
+          item.type === "tag"
+            ? `data-tag="${this.escapeHtmlAttribute(item.tag)}"`
+            : `data-page="${this.escapeHtmlAttribute(item.page)}"`;
+        const classes = [
+          "icon-nav-btn",
+          "sidebar-sortable-nav-btn",
+          item.type === "tag" ? "pinned-tag-nav-btn" : "nav-btn",
+          isActive ? "active" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        return `
           <button
             type="button"
-            class="icon-nav-btn pinned-tag-nav-btn${this.state.page === "all-games" && this.state.filterTag === tag ? " active" : ""}"
-            data-tag="${this.escapeHtmlAttribute(tag)}"
-            title="${this.escapeHtmlAttribute(tag)}"
+            class="${classes}"
+            data-nav-key="${this.escapeHtmlAttribute(item.key)}"
+            data-tooltip="${this.escapeHtmlAttribute(item.label)}"
+            aria-label="${this.escapeHtmlAttribute(item.label)}"
+            ${dataAttrs}
           >
-            <span class="icon-nav-icon" data-lucide="pin"></span>
-            <span class="icon-nav-text">${this.escapeHtml(tag)}</span>
+            <span class="icon-nav-icon" data-lucide="${this.escapeHtmlAttribute(item.icon)}"></span>
+            <span class="icon-nav-text">${this.escapeHtml(item.label)}</span>
           </button>
-        `,
-      )
+        `;
+      })
       .join("");
+  },
+
+  sidebarNavOrderForPinnedTags(pinnedTags) {
+    const currentPreferences = this.getState().preferences || {};
+    const current = this.normalizeSidebarNavOrder(
+      currentPreferences.sidebarNavOrder || [],
+      currentPreferences.pinnedTags || [],
+    );
+    const pinnedKeySet = new Set(
+      this.normalizeStringList(pinnedTags).map((tag) => this.sidebarTagKey(tag)),
+    );
+    const withoutRemovedTags = this.normalizeStringList(current).filter(
+      (key) => !key.startsWith("tag:") || pinnedKeySet.has(key),
+    );
+    pinnedKeySet.forEach((key) => {
+      if (!withoutRemovedTags.includes(key)) {
+        withoutRemovedTags.push(key);
+      }
+    });
+    return this.normalizeSidebarNavOrder(withoutRemovedTags, pinnedTags);
   },
 
   renderGames() {
@@ -4390,12 +4568,14 @@ const App = {
 
   showTagContextMenu(event) {
     event.preventDefault();
-    const article = event.target.closest(".tag-card[data-tag]");
-    if (!article?.dataset.tag) return;
+    const trigger = event.target.closest(
+      ".tag-card[data-tag], .pinned-tag-nav-btn[data-tag]",
+    );
+    if (!trigger?.dataset.tag) return;
 
     this.hideGameContextMenu();
-    this.state.contextMenuTag = article.dataset.tag;
-    const isPinned = this.isPinnedTag(article.dataset.tag);
+    this.state.contextMenuTag = trigger.dataset.tag;
+    const isPinned = this.isPinnedTag(trigger.dataset.tag);
 
     const pinTextNode = document.getElementById("ctx-menu-pin-text");
     if (pinTextNode) {
@@ -4441,12 +4621,70 @@ const App = {
     this.openTagFilter(card.dataset.tag);
   },
 
-  handlePinnedTagNavClick(event) {
-    const button = event.target.closest(".pinned-tag-nav-btn[data-tag]");
-    if (!button?.dataset.tag) {
+  handleSidebarTopNavClick(event) {
+    if (Date.now() < (this.state.dragJustHappenedUntil || 0)) {
       return;
     }
-    this.openTagFilter(button.dataset.tag);
+    const button = event.target.closest(".sidebar-sortable-nav-btn");
+    if (!button) {
+      return;
+    }
+    if (button.dataset.tag) {
+      this.openTagFilter(button.dataset.tag);
+      return;
+    }
+    if (button.dataset.page) {
+      this.setPage(button.dataset.page);
+    }
+  },
+
+  showSidebarTooltip(event) {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+    const button = event.target.closest(".icon-nav-btn[data-tooltip]");
+    if (!button || !this.dom.sidebar?.contains(button)) {
+      return;
+    }
+    button.removeAttribute("title");
+    if (this.state.sidebarExpanded) {
+      this.hideSidebarTooltip();
+      return;
+    }
+    const label = button.dataset.tooltip || button.getAttribute("aria-label") || "";
+    if (!label) {
+      return;
+    }
+    if (!this.sidebarTooltipElement) {
+      this.sidebarTooltipElement = document.createElement("div");
+      this.sidebarTooltipElement.className = "sidebar-tooltip";
+      document.body.appendChild(this.sidebarTooltipElement);
+    }
+    const rect = button.getBoundingClientRect();
+    this.sidebarTooltipElement.textContent = label;
+    this.sidebarTooltipElement.style.left = `${rect.right + 10}px`;
+    this.sidebarTooltipElement.style.top = `${rect.top + rect.height / 2}px`;
+    this.sidebarTooltipElement.classList.add("visible");
+  },
+
+  hideSidebarTooltip(event) {
+    if (event) {
+      if (!(event.target instanceof Element)) {
+        return;
+      }
+      const button = event.target.closest(".icon-nav-btn[data-tooltip]");
+      if (
+        button &&
+        event.relatedTarget instanceof Node &&
+        button.contains(event.relatedTarget)
+      ) {
+        return;
+      }
+    }
+    if (!this.sidebarTooltipElement) {
+      return;
+    }
+    this.sidebarTooltipElement.classList.remove("visible");
   },
 
   handleAccountGridClick(event) {
@@ -4989,6 +5227,7 @@ const App = {
       favoriteGames: [...this.state.favoriteGames],
       tagOrder: current.tagOrder || [],
       pinnedTags: current.pinnedTags || [],
+      sidebarNavOrder: current.sidebarNavOrder || [],
       ...overrides,
     };
   },
@@ -6179,6 +6418,7 @@ const App = {
       return;
     }
 
+    const nextSidebarNavOrder = this.sidebarNavOrderForPinnedTags(nextPinnedTags);
     const previousSnapshot = this.state.snapshot
       ? JSON.parse(JSON.stringify(this.state.snapshot))
       : null;
@@ -6187,6 +6427,7 @@ const App = {
       this.state.snapshot.state.preferences = {
         ...(currentState.preferences || {}),
         pinnedTags: nextPinnedTags,
+        sidebarNavOrder: nextSidebarNavOrder,
       };
       this.markLocalSnapshotEchoCandidate();
     }
@@ -6198,6 +6439,7 @@ const App = {
       const snapshot = await this.bridge.SavePreferences(
         this.buildPreferencesPayload({
           pinnedTags: nextPinnedTags,
+          sidebarNavOrder: nextSidebarNavOrder,
         }),
       );
       this.applySnapshot(snapshot, { renderSettings: true });

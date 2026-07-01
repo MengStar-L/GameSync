@@ -434,6 +434,10 @@ func (s *Store) MergeRemoteCatalog(catalog RemoteCatalog) error {
 		s.state.Preferences.PinnedTags = normalizeStringList(catalog.Preferences.PinnedTags)
 		s.state.Preferences.PinnedTagsUpdatedAt = catalog.Preferences.PinnedTagsUpdatedAt
 	}
+	if catalog.Preferences != nil && !s.state.Preferences.SidebarNavOrderUpdatedAt.After(catalog.Preferences.SidebarNavOrderUpdatedAt) {
+		s.state.Preferences.SidebarNavOrder = normalizeStringList(catalog.Preferences.SidebarNavOrder)
+		s.state.Preferences.SidebarNavOrderUpdatedAt = catalog.Preferences.SidebarNavOrderUpdatedAt
+	}
 	if catalog.Preferences != nil && !s.state.Preferences.FavoriteGamesUpdatedAt.After(catalog.Preferences.FavoriteGamesUpdatedAt) {
 		s.state.Preferences.FavoriteGames = normalizeStringList(catalog.Preferences.FavoriteGames)
 		s.state.Preferences.FavoriteGamesUpdatedAt = catalog.Preferences.FavoriteGamesUpdatedAt
@@ -636,6 +640,7 @@ func (s *Store) SavePreferences(preferences Preferences) error {
 	preferences.FavoriteGames = normalizeStringList(preferences.FavoriteGames)
 	preferences.TagOrder = normalizeStringList(preferences.TagOrder)
 	preferences.PinnedTags = normalizeStringList(preferences.PinnedTags)
+	preferences.SidebarNavOrder = normalizeStringList(preferences.SidebarNavOrder)
 
 	if preferences.StartupSyncMode == "" {
 		preferences.StartupSyncMode = "smart"
@@ -667,6 +672,11 @@ func (s *Store) SavePreferences(preferences Preferences) error {
 		preferences.PinnedTagsUpdatedAt = time.Now()
 	} else if preferences.PinnedTagsUpdatedAt.IsZero() {
 		preferences.PinnedTagsUpdatedAt = s.state.Preferences.PinnedTagsUpdatedAt
+	}
+	if !equalStringSlices(s.state.Preferences.SidebarNavOrder, preferences.SidebarNavOrder) {
+		preferences.SidebarNavOrderUpdatedAt = time.Now()
+	} else if preferences.SidebarNavOrderUpdatedAt.IsZero() {
+		preferences.SidebarNavOrderUpdatedAt = s.state.Preferences.SidebarNavOrderUpdatedAt
 	}
 	if preferences.GameOrderUpdatedAt.IsZero() {
 		preferences.GameOrderUpdatedAt = s.state.Preferences.GameOrderUpdatedAt

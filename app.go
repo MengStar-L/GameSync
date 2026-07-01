@@ -1167,6 +1167,21 @@ func (a *App) UpdateTagOrder(tags []string) (core.DashboardSnapshot, error) {
 	return a.snapshot()
 }
 
+func (a *App) UpdateSidebarNavOrder(items []string) (core.DashboardSnapshot, error) {
+	if err := a.ensureReady(); err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+
+	prefs := a.store.Snapshot().Preferences
+	prefs.SidebarNavOrder = items
+	if err := a.store.SavePreferences(prefs); err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+	a.queueRemoteCatalogSync("sidebar nav order update")
+
+	return a.snapshot()
+}
+
 func (a *App) SavePreferences(preferences core.Preferences) (core.DashboardSnapshot, error) {
 	if err := a.ensureReady(); err != nil {
 		return core.DashboardSnapshot{}, err
@@ -2460,13 +2475,15 @@ func (a *App) syncRemoteCatalog() error {
 		Accounts: state.Accounts,
 		Games:    state.Games,
 		Preferences: &core.RemotePreferences{
-			TagOrder:               state.Preferences.TagOrder,
-			TagOrderUpdatedAt:      state.Preferences.TagOrderUpdatedAt,
-			PinnedTags:             state.Preferences.PinnedTags,
-			PinnedTagsUpdatedAt:    state.Preferences.PinnedTagsUpdatedAt,
-			FavoriteGames:          state.Preferences.FavoriteGames,
-			FavoriteGamesUpdatedAt: state.Preferences.FavoriteGamesUpdatedAt,
-			GameOrderUpdatedAt:     state.Preferences.GameOrderUpdatedAt,
+			TagOrder:                 state.Preferences.TagOrder,
+			TagOrderUpdatedAt:        state.Preferences.TagOrderUpdatedAt,
+			PinnedTags:               state.Preferences.PinnedTags,
+			PinnedTagsUpdatedAt:      state.Preferences.PinnedTagsUpdatedAt,
+			SidebarNavOrder:          state.Preferences.SidebarNavOrder,
+			SidebarNavOrderUpdatedAt: state.Preferences.SidebarNavOrderUpdatedAt,
+			FavoriteGames:            state.Preferences.FavoriteGames,
+			FavoriteGamesUpdatedAt:   state.Preferences.FavoriteGamesUpdatedAt,
+			GameOrderUpdatedAt:       state.Preferences.GameOrderUpdatedAt,
 		},
 		Tombstones: activeCatalogTombstones(state),
 	}, encryptedCredentials, state.Device)

@@ -20,35 +20,23 @@
           <span class="icon-nav-text">菜单</span>
         </button>
 
-        <button class="icon-nav-btn nav-btn active" data-page="all-games">
-          <span class="icon-nav-icon" data-lucide="gamepad-2"></span>
-          <span class="icon-nav-text">全部游戏</span>
-        </button>
-        <button class="icon-nav-btn nav-btn" data-page="favorite-games">
-          <span class="icon-nav-icon" data-lucide="heart"></span>
-          <span class="icon-nav-text">常玩游戏</span>
-        </button>
-        <button class="icon-nav-btn nav-btn" data-page="all-tags">
-          <span class="icon-nav-icon" data-lucide="tags"></span>
-          <span class="icon-nav-text">全部标签</span>
-        </button>
-        <div class="pinned-tags-nav" id="pinned-tags-nav"></div>
-        <button class="icon-nav-btn nav-btn" data-page="accounts">
-          <span class="icon-nav-icon" data-lucide="cloud"></span>
-          <span class="icon-nav-text">Cloudflare</span>
-        </button>
-        <button class="icon-nav-btn nav-btn" data-page="activities">
-          <span class="icon-nav-icon" data-lucide="activity"></span>
-          <span class="icon-nav-text">同步状态</span>
-        </button>
+        <div class="sidebar-top-nav" id="sidebar-top-nav"></div>
       </div>
 
       <div class="icon-sidebar-bottom">
-        <button class="icon-nav-btn nav-btn" data-page="settings">
+        <button class="icon-nav-btn nav-btn" data-page="accounts" data-tooltip="Cloudflare">
+          <span class="icon-nav-icon" data-lucide="cloud"></span>
+          <span class="icon-nav-text">Cloudflare</span>
+        </button>
+        <button class="icon-nav-btn nav-btn" data-page="activities" data-tooltip="同步状态">
+          <span class="icon-nav-icon" data-lucide="activity"></span>
+          <span class="icon-nav-text">同步状态</span>
+        </button>
+        <button class="icon-nav-btn nav-btn" data-page="settings" data-tooltip="设置">
           <span class="icon-nav-icon" data-lucide="settings"></span>
           <span class="icon-nav-text">设置</span>
         </button>
-        <button class="icon-nav-btn" id="sidebar-sync-btn">
+        <button class="icon-nav-btn" id="sidebar-sync-btn" data-tooltip="同步全部">
           <span class="icon-nav-icon" data-lucide="refresh-cw"></span>
           <span class="icon-nav-text">同步全部</span>
         </button>

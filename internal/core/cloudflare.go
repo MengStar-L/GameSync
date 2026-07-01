@@ -320,6 +320,7 @@ func (c *D1Client) SaveRemoteCatalog(ctx context.Context, catalog RemoteCatalog,
 		sharedPreferences.FavoriteGamesUpdatedAt,
 		sharedPreferences.TagOrderUpdatedAt,
 		sharedPreferences.PinnedTagsUpdatedAt,
+		sharedPreferences.SidebarNavOrderUpdatedAt,
 		sharedPreferences.GameOrderUpdatedAt,
 	)
 	if preferencesUpdatedAt.IsZero() {
@@ -393,6 +394,7 @@ func remoteCatalogPreferences(preferences *RemotePreferences) *RemotePreferences
 	shared.FavoriteGames = normalizeStringList(shared.FavoriteGames)
 	shared.TagOrder = normalizeStringList(shared.TagOrder)
 	shared.PinnedTags = normalizeStringList(shared.PinnedTags)
+	shared.SidebarNavOrder = normalizeStringList(shared.SidebarNavOrder)
 	return &shared
 }
 

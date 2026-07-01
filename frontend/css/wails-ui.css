@@ -1049,9 +1049,21 @@
 }
 
 .game-card.drag-over,
-.tag-card.drag-over {
+.tag-card.drag-over,
+.sidebar-sortable-nav-btn.drag-over {
   box-shadow: 0 0 20px rgba(99, 102, 241, 0.28);
   border-color: rgba(99, 102, 241, 0.34);
+}
+
+.sidebar-sortable-nav-btn.dragging,
+.sidebar-sortable-nav-btn.dragging:hover {
+  background: rgba(99, 102, 241, 0.12) !important;
+  color: var(--accent) !important;
+  transition: none !important;
+}
+
+.sidebar-sortable-nav-btn.drag-placeholder {
+  min-height: 40px;
 }
 
 .tag-card.drag-over::before {

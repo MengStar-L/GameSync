@@ -249,6 +249,59 @@ func TestMergeRemoteCatalogPinnedTagsUsesNewestTimestamp(t *testing.T) {
 	}
 }
 
+func TestMergeRemoteCatalogSidebarNavOrderUsesNewestTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	localTime := time.Now()
+	remoteTime := localTime.Add(time.Hour)
+	store.state.Preferences.SidebarNavOrder = []string{"page:all-games", "tag:local-tag"}
+	store.state.Preferences.SidebarNavOrderUpdatedAt = localTime
+
+	err = store.MergeRemoteCatalog(RemoteCatalog{
+		Preferences: &RemotePreferences{
+			SidebarNavOrder:          []string{"tag:remote-tag", "tag:remote-tag", "page:all-tags"},
+			SidebarNavOrderUpdatedAt: remoteTime,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(store.state.Preferences.SidebarNavOrder) != 2 ||
+		store.state.Preferences.SidebarNavOrder[0] != "tag:remote-tag" ||
+		store.state.Preferences.SidebarNavOrder[1] != "page:all-tags" {
+		t.Fatalf("remote sidebar nav order was not merged and normalized: %+v", store.state.Preferences.SidebarNavOrder)
+	}
+	if !store.state.Preferences.SidebarNavOrderUpdatedAt.Equal(remoteTime) {
+		t.Fatalf("remote sidebar nav order timestamp was not merged: %s", store.state.Preferences.SidebarNavOrderUpdatedAt)
+	}
+
+	newerLocal := remoteTime.Add(time.Hour)
+	store.state.Preferences.SidebarNavOrder = []string{"page:favorite-games"}
+	store.state.Preferences.SidebarNavOrderUpdatedAt = newerLocal
+	err = store.MergeRemoteCatalog(RemoteCatalog{
+		Preferences: &RemotePreferences{
+			SidebarNavOrder:          []string{"page:all-tags"},
+			SidebarNavOrderUpdatedAt: remoteTime,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(store.state.Preferences.SidebarNavOrder) != 1 ||
+		store.state.Preferences.SidebarNavOrder[0] != "page:favorite-games" {
+		t.Fatalf("older remote sidebar nav order overwrote local value: %+v", store.state.Preferences.SidebarNavOrder)
+	}
+	if !store.state.Preferences.SidebarNavOrderUpdatedAt.Equal(newerLocal) {
+		t.Fatalf("older remote sidebar nav order timestamp overwrote local timestamp: %s", store.state.Preferences.SidebarNavOrderUpdatedAt)
+	}
+}
+
 func TestSafeSaveFilePathRejectsEscapes(t *testing.T) {
 	root := t.TempDir()
 	if _, err := safeSaveFilePath(root, "profile/save.dat"); err != nil {
