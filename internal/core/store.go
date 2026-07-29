@@ -58,6 +58,7 @@ func (s *Store) ExportState() ([]byte, error) {
 // ImportState restores app state from an exported backup payload.
 func (s *Store) ImportState(data []byte) error {
 	var imported AppState
+	backgroundSyncIntervalPresent := preferencesJSONFieldPresent(data, "backgroundSyncIntervalSeconds")
 	if err := json.Unmarshal(data, &imported); err != nil {
 		return fmt.Errorf("瑙ｆ瀽瀵煎叆鐨勭姸鎬佸浠藉け璐? %w", err)
 	}
@@ -70,6 +71,9 @@ func (s *Store) ImportState(data []byte) error {
 	s.state.Games = imported.Games
 	s.state.Accounts = imported.Accounts
 	s.state.Preferences = imported.Preferences
+	if !backgroundSyncIntervalPresent || !IsValidBackgroundSyncInterval(s.state.Preferences.BackgroundSyncIntervalSeconds) {
+		s.state.Preferences.BackgroundSyncIntervalSeconds = DefaultBackgroundSyncIntervalSeconds
+	}
 	s.state.Activities = imported.Activities
 	clearGameLocalPaths(s.state.Games)
 	s.state.CatalogSync.Dirty = true
@@ -469,6 +473,15 @@ func (s *Store) MarkCatalogSyncFailed(message string) error {
 	return s.saveLocked()
 }
 
+func (s *Store) MarkCatalogCheckFailed(message string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	s.state.CatalogSync.LastAttemptAt = &now
+	s.state.CatalogSync.LastError = strings.TrimSpace(message)
+	return s.saveLocked()
+}
+
 func (s *Store) HasPendingCatalogSync() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -842,6 +855,9 @@ func (s *Store) ReorderGames(gameIDs []string) error {
 func (s *Store) SavePreferences(preferences Preferences) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !IsValidBackgroundSyncInterval(preferences.BackgroundSyncIntervalSeconds) {
+		return fmt.Errorf("background sync interval must be one of 0, 30, 60, or 300 seconds")
+	}
 
 	preferences.StartupSyncMode = strings.TrimSpace(preferences.StartupSyncMode)
 	preferences.ConflictPolicy = strings.TrimSpace(preferences.ConflictPolicy)
@@ -996,6 +1012,7 @@ func (s *Store) load() error {
 		return fmt.Errorf("read state file: %w", err)
 	}
 
+	backgroundSyncIntervalPresent := preferencesJSONFieldPresent(content, "backgroundSyncIntervalSeconds")
 	if err := json.Unmarshal(content, &s.state); err != nil {
 		return fmt.Errorf("unmarshal state file: %w", err)
 	}
@@ -1018,6 +1035,9 @@ func (s *Store) load() error {
 	if s.state.Preferences.StartupSyncMode == "" {
 		s.state.Preferences = DefaultPreferences()
 	}
+	if !backgroundSyncIntervalPresent || !IsValidBackgroundSyncInterval(s.state.Preferences.BackgroundSyncIntervalSeconds) {
+		s.state.Preferences.BackgroundSyncIntervalSeconds = DefaultBackgroundSyncIntervalSeconds
+	}
 	if s.state.Games == nil {
 		s.state.Games = []Game{}
 	}
@@ -1039,6 +1059,17 @@ func (s *Store) load() error {
 
 	s.state.Device.LastStartedAt = time.Now()
 	return s.saveLocked()
+}
+
+func preferencesJSONFieldPresent(content []byte, field string) bool {
+	var document struct {
+		Preferences map[string]json.RawMessage `json:"preferences"`
+	}
+	if json.Unmarshal(content, &document) != nil || document.Preferences == nil {
+		return false
+	}
+	_, exists := document.Preferences[field]
+	return exists
 }
 
 func (s *Store) saveLocked() error {

@@ -53,6 +53,9 @@ func TestDeviceIndexStoreGameLifecycle(t *testing.T) {
 		committed.RemoteManifestHash != "remote-manifest-hash" || !committed.GeneratedAt.Equal(generatedAt) || len(committed.Files) != 2 {
 		t.Fatalf("committed index = %+v", committed)
 	}
+	if err := store.UpdateRemoteManifestToken("game-1", "etag:v7"); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := store.MarkDirty("game-1", "slot\\b.sav", "slot/a.sav", "slot/a.sav"); err != nil {
 		t.Fatal(err)
@@ -105,7 +108,7 @@ func TestDeviceIndexStoreGameLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	persisted, ok := reloaded.Game("game-1")
-	if !ok || persisted.Cover != cover || persisted.ScanState != ScanStateRebuild {
+	if !ok || persisted.Cover != cover || persisted.ScanState != ScanStateRebuild || persisted.RemoteManifestToken != "etag:v7" {
 		t.Fatalf("persisted index = %+v", persisted)
 	}
 

@@ -14,6 +14,11 @@ import (
 
 const maxManifestCASAttempts = 3
 
+type syncBatchOptions struct {
+	skipCatalogPull     bool
+	forceManualConflict bool
+}
+
 var coverRetryBackoff = [...]time.Duration{
 	30 * time.Second,
 	60 * time.Second,
@@ -46,18 +51,24 @@ func (a *App) RunSyncAll() (core.SyncBatchResult, error) {
 func (a *App) runSyncBatch(requests []core.SyncRunRequest) (core.SyncBatchResult, error) {
 	a.syncCoordinatorMu.Lock()
 	defer a.syncCoordinatorMu.Unlock()
+	return a.runSyncBatchLocked(requests, syncBatchOptions{})
+}
+
+func (a *App) runSyncBatchLocked(requests []core.SyncRunRequest, options syncBatchOptions) (core.SyncBatchResult, error) {
 	result := core.SyncBatchResult{
 		Catalog: core.SyncCatalogResult{Status: "success"},
 		Covers:  []core.SyncCoverResult{},
 		Saves:   []core.SyncGameResult{},
 	}
 
-	changed, pullErr := a.pullRemoteCatalog()
-	if pullErr != nil {
-		result.Catalog.Status = "failed"
-		result.Catalog.Message = pullErr.Error()
-	} else if changed {
-		a.emitStateUpdated()
+	if !options.skipCatalogPull {
+		changed, pullErr := a.pullRemoteCatalog()
+		if pullErr != nil {
+			result.Catalog.Status = "failed"
+			result.Catalog.Message = pullErr.Error()
+		} else if changed {
+			a.emitStateUpdated()
+		}
 	}
 	if err := a.refreshAllSyncTracking(false); err != nil && a.ctx != nil {
 		wailsruntime.LogWarningf(a.ctx, "refresh save tracking before sync failed: %v", err)
@@ -73,7 +84,7 @@ func (a *App) runSyncBatch(requests []core.SyncRunRequest) (core.SyncBatchResult
 	}
 
 	for _, target := range targets {
-		saveResult, stats := a.syncSaveForCoordinator(target)
+		saveResult, stats := a.syncSaveForCoordinator(target, options.forceManualConflict)
 		result.Saves = append(result.Saves, saveResult)
 		addSyncResourceStats(&result.Stats, stats)
 	}
@@ -315,7 +326,7 @@ func (a *App) updateCoverIndexForGame(game core.Game) {
 	})
 }
 
-func (a *App) syncSaveForCoordinator(request core.SyncRunRequest) (core.SyncGameResult, core.SyncResourceStats) {
+func (a *App) syncSaveForCoordinator(request core.SyncRunRequest, forceManualConflict bool) (core.SyncGameResult, core.SyncResourceStats) {
 	request.GameID = strings.TrimSpace(request.GameID)
 	unlock := a.lockGameSync(request.GameID)
 	defer unlock()
@@ -403,6 +414,9 @@ func (a *App) syncSaveForCoordinator(request core.SyncRunRequest) (core.SyncGame
 	}
 
 	choice := resolveSyncConflictChoice(game, state.Preferences, request.ConflictChoice)
+	if forceManualConflict {
+		choice = ""
+	}
 	var summary core.SyncSummary
 	anchor := game.Anchor
 	for attempt := 0; attempt < maxManifestCASAttempts; attempt++ {

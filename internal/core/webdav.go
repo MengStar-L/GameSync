@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,7 +31,7 @@ const (
 const (
 	webdavPropfindQuotaBody = `<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:quota-used-bytes/></d:prop></d:propfind>`
 	webdavPropfindUsageBody = `<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:getcontentlength/><d:resourcetype/></d:prop></d:propfind>`
-	webdavPropfindListBody  = `<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:getcontentlength/><d:getlastmodified/><d:resourcetype/></d:prop></d:propfind>`
+	webdavPropfindListBody  = `<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:getcontentlength/><d:getlastmodified/><d:getetag/><d:resourcetype/></d:prop></d:propfind>`
 )
 
 // WebdavClient 用一个 WebDAV 目录同时承载目录索引（JSON 文件 + ETag CAS）与存档对象，
@@ -51,8 +53,9 @@ type WebdavClient struct {
 }
 
 var (
-	_ CatalogStore = (*WebdavClient)(nil)
-	_ ObjectStore  = (*WebdavClient)(nil)
+	_ CatalogStore             = (*WebdavClient)(nil)
+	_ RemoteManifestHeadLister = (*WebdavClient)(nil)
+	_ ObjectStore              = (*WebdavClient)(nil)
 )
 
 // webdavCatalogDocument 对应 catalog/catalog.json 的存储结构
@@ -515,6 +518,80 @@ func (c *WebdavClient) LoadRemoteManifest(ctx context.Context, gameID string) (R
 	return record, nil
 }
 
+func (c *WebdavClient) ListRemoteManifestHeads(ctx context.Context) ([]RemoteManifestHead, error) {
+	result, status, err := c.propfind(ctx, c.resourceURL("manifests"), "1", webdavPropfindListBody)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		if status == http.StatusNotFound {
+			return nil, nil
+		}
+		return nil, webdavStatusError("列举云端存档索引", status)
+	}
+	heads := make([]RemoteManifestHead, 0, len(result.Responses))
+	for _, entry := range result.Responses {
+		for _, propstat := range entry.Propstats {
+			if !propstatOK(propstat.Status) || propstat.Prop.ResourceType.Collection != nil {
+				continue
+			}
+			gameID := webdavManifestGameID(entry.Href)
+			if gameID == "" {
+				continue
+			}
+			head := RemoteManifestHead{GameID: gameID}
+			etag := strings.TrimSpace(propstat.Prop.GetETag)
+			length := strings.TrimSpace(propstat.Prop.GetContentLength)
+			modified := strings.TrimSpace(propstat.Prop.GetLastModified)
+			if parsed, parseErr := http.ParseTime(modified); parseErr == nil {
+				head.UpdatedAt = parsed
+			}
+			switch {
+			case etag != "":
+				head.Token = "etag:" + etag
+			case modified != "" && length != "":
+				head.Token = "meta:" + modified + ":" + length
+			default:
+				body, _, exists, loadErr := c.getResource(ctx, c.manifestResource(gameID), "读取云端存档索引")
+				if loadErr != nil {
+					return nil, loadErr
+				}
+				if !exists {
+					continue
+				}
+				head.Token = fmt.Sprintf("body:%x", sha256.Sum256(body))
+				var record RemoteManifestRecord
+				if json.Unmarshal(body, &record) == nil {
+					head.Version = record.Version
+					head.UpdatedByDevice = record.UpdatedByDevice
+					if !record.UpdatedAt.IsZero() {
+						head.UpdatedAt = record.UpdatedAt
+					}
+				}
+			}
+			heads = append(heads, head)
+			break
+		}
+	}
+	sort.Slice(heads, func(i, j int) bool { return heads[i].GameID < heads[j].GameID })
+	return heads, nil
+}
+
+func webdavManifestGameID(href string) string {
+	href = strings.TrimSuffix(strings.TrimSpace(href), "/")
+	if unescaped, err := url.PathUnescape(href); err == nil {
+		href = unescaped
+	}
+	filename := href
+	if index := strings.LastIndex(filename, "/"); index >= 0 {
+		filename = filename[index+1:]
+	}
+	if !strings.HasSuffix(strings.ToLower(filename), ".json") {
+		return ""
+	}
+	return strings.TrimSpace(filename[:len(filename)-len(".json")])
+}
+
 func (c *WebdavClient) SaveRemoteManifest(ctx context.Context, record RemoteManifestRecord) error {
 	if err := c.EnsureSchema(ctx); err != nil {
 		return err
@@ -782,6 +859,7 @@ type webdavProp struct {
 	QuotaUsedBytes   string             `xml:"quota-used-bytes"`
 	GetContentLength string             `xml:"getcontentlength"`
 	GetLastModified  string             `xml:"getlastmodified"`
+	GetETag          string             `xml:"getetag"`
 	ResourceType     webdavResourceType `xml:"resourcetype"`
 }
 

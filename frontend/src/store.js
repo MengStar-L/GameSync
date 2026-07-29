@@ -11,7 +11,12 @@ const state = {
   snapshot: null, // DashboardSnapshot
   runtimeStatus: {}, // { [gameId]: { text, tone: 'playing'|'syncing'|'success'|'warn' } }
   netStatus: { state: "checking", message: "检测中" },
-  syncTasks: { catalog: { status: "checking", message: "检测中" }, covers: {}, saves: {} },
+  syncTasks: {
+    catalog: { status: "checking", message: "检测中" },
+    background: { status: "checking", message: "" },
+    covers: {},
+    saves: {},
+  },
   search: "",
   libraryFilter: { kind: "all", tag: "" }, // 'all' | 'fav' | 'tag'
   pendingDeletes: new Set(), // 乐观隐藏中的游戏
@@ -94,6 +99,11 @@ function recomputeSyncStatus() {
 
 function setCatalogSyncStatus(status, message) {
   state.syncTasks.catalog = { status: status || "checking", message: message || "" };
+  recomputeSyncStatus();
+}
+
+function setBackgroundSyncStatus(status, message) {
+  state.syncTasks.background = { status: status || "checking", message: message || "" };
   recomputeSyncStatus();
 }
 
@@ -727,6 +737,54 @@ const actions = {
       if (now - last > 5 * 60 * 1000) {
         catalogFailToastAt.set(msg, now);
         toast(`后台上传数据库失败：${msg}`, "err");
+      }
+    });
+    api.onEvent("sync:background_state", (p) => {
+      const status = p?.status || "checking";
+      const changedGameIds = Array.isArray(p?.changedGameIds) ? p.changedGameIds.filter(Boolean) : [];
+      const conflictGameIds = new Set(Array.isArray(p?.conflictGameIds) ? p.conflictGameIds.filter(Boolean) : []);
+      setBackgroundSyncStatus(status, p?.message || "");
+      if (status === "checking") return;
+      if (status === "offline") {
+        for (const gameId of changedGameIds) {
+          if (state.syncTasks.saves[gameId]?.status === "syncing") setSaveSyncStatus(gameId, null);
+          if (!restorePendingCoverStatus(gameId) && state.runtimeStatus[gameId]?.tone === "syncing") {
+            setRuntimeStatus(gameId, null);
+          }
+        }
+        return;
+      }
+      if (status === "syncing") {
+        for (const gameId of changedGameIds) {
+          setSaveSyncStatus(gameId, "syncing", "正在同步云端存档");
+          setRuntimeStatus(gameId, { text: "同步中", tone: "syncing", source: "background" });
+        }
+        return;
+      }
+      if (state.syncTasks.catalog.status === "offline" || state.syncTasks.catalog.status === "retrying") {
+        setCatalogSyncStatus("succeeded", "云端目录已同步");
+      }
+      for (const gameId of changedGameIds) {
+        const game = select.game(gameId);
+        const syncStatus = conflictGameIds.has(gameId) ? "conflict" : game?.lastSync?.status;
+        if (syncStatus === "conflict") {
+          const message = game?.lastSync?.message || "存档冲突，等待手动处理";
+          setSaveSyncStatus(gameId, "conflict", message);
+          setRuntimeStatus(gameId, { text: "存档冲突，等待处理", detail: message, tone: "warn", source: "background" });
+        } else if (syncStatus === "failed") {
+          const message = game?.lastSync?.message || "后台同步失败";
+          setSaveSyncStatus(gameId, "failed", message);
+          setRuntimeStatus(gameId, { text: "同步失败", detail: message, tone: "warn", source: "background" });
+        } else {
+          setSaveSyncStatus(gameId, "succeeded", game?.lastSync?.message || "同步完成");
+          setRuntimeStatus(gameId, { text: "同步完成", tone: "success", source: "background" });
+          window.setTimeout(() => {
+            if (state.syncTasks.saves[gameId]?.status === "succeeded") setSaveSyncStatus(gameId, null);
+            if (state.runtimeStatus[gameId]?.source === "background" && state.runtimeStatus[gameId]?.tone === "success") {
+              setRuntimeStatus(gameId, null);
+            }
+          }, 3000);
+        }
       }
     });
     api.onEvent("state:updated", (appStateNext) => {

@@ -1,21 +1,28 @@
 const ACTIVE_STATUSES = new Set(["queued", "syncing"]);
 const OFFLINE_STATUSES = new Set(["offline", "retrying"]);
 
-export function deriveSyncStatus({ catalog = {}, covers = {}, saves = {} } = {}) {
+export function deriveSyncStatus({ catalog = {}, background = {}, covers = {}, saves = {} } = {}) {
   const coverStates = Object.values(covers);
   const saveStates = Object.values(saves);
   const active =
     ACTIVE_STATUSES.has(catalog.status) ||
+    background.status === "syncing" ||
     coverStates.some((item) => item?.status === "syncing") ||
     saveStates.some((item) => item?.status === "syncing");
   if (active) {
     const activeCover = coverStates.find((item) => item?.status === "syncing");
     const activeSave = saveStates.find((item) => item?.status === "syncing");
-    return { state: "syncing", message: activeCover?.message || activeSave?.message || catalog.message || "正在同步" };
+    return {
+      state: "syncing",
+      message: activeCover?.message || activeSave?.message || background.message || catalog.message || "正在同步",
+    };
   }
 
-  if (OFFLINE_STATUSES.has(catalog.status)) {
-    return { state: "offline", message: catalog.message || "云端暂时无法连接，本地内容仍可使用" };
+  if (OFFLINE_STATUSES.has(catalog.status) || background.status === "offline") {
+    return {
+      state: "offline",
+      message: background.message || catalog.message || "云端暂时无法连接，本地内容仍可使用",
+    };
   }
 
   const pendingCover = coverStates.find((item) => item?.status === "pending");
@@ -30,6 +37,7 @@ export function deriveSyncStatus({ catalog = {}, covers = {}, saves = {} } = {})
 
   if (
     catalog.status === "succeeded" ||
+    background.status === "succeeded" ||
     coverStates.some((item) => item?.status === "succeeded") ||
     saveStates.some((item) => item?.status === "succeeded")
   ) {

@@ -26,54 +26,67 @@ import (
 )
 
 type App struct {
-	ctx                context.Context
-	store              *core.Store
-	engine             *core.Engine
-	recoveryPassword   string
-	baseDir            string
-	savedWindowState   windowState
-	windowStateLoaded  bool
-	tray               trayController
-	windowIconMu       sync.Mutex
-	windowIconCleanup  func()
-	catalogSyncMu      sync.Mutex
-	catalogSyncTimer   *time.Timer
-	catalogRetryTimer  *time.Timer
-	catalogSyncActive  bool
-	catalogSyncQueued  bool
-	lastSyncError      string
-	lastSyncErrorAt    time.Time
-	coverRetryMu       sync.Mutex
-	coverRetryTimers   map[string]*time.Timer
-	coverRetryAttempts map[string]int
-	coverRetryDelayFn  func(int) time.Duration
-	coverRetryStopped  bool
-	runtimeEventFn     func(string, any)
-	deleteQueueOnce    sync.Once
-	deleteGameMu       sync.Mutex
-	deleteGameQueue    chan queuedGameDelete
-	deleteGamePending  map[string]queuedGameDelete
-	backupUploadOnce   sync.Once
-	backupUploadMu     sync.Mutex
-	backupUploadQueue  chan queuedBackupUpload
-	backupUploadSet    map[string]queuedBackupUpload
-	backupDeleteOnce   sync.Once
-	backupDeleteMu     sync.Mutex
-	backupDeleteQueue  chan queuedBackupDelete
-	backupDeleteSet    map[string]queuedBackupDelete
-	syncCoordinatorMu  sync.Mutex
-	syncInfraMu        sync.Mutex
-	deviceIndex        *core.DeviceIndexStore
-	saveChangeTracker  *core.SaveChangeTracker
-	syncGameMu         sync.Mutex
-	syncGameLocks      map[string]*sync.Mutex
-	switchStorageMu    sync.Mutex
-	switchStorageBusy  bool
-	remoteOpsMu        sync.RWMutex
-	handoffMu          sync.Mutex
-	catalogStoreFn     func(core.CloudflareAccount) (core.CatalogStore, error)
-	objectStoreFn      func(context.Context, core.CloudflareAccount) (core.ObjectStore, error)
-	verifyStorageFn    func(context.Context, core.CloudflareAccount) (core.CloudflareAccount, error)
+	ctx                      context.Context
+	store                    *core.Store
+	engine                   *core.Engine
+	recoveryPassword         string
+	baseDir                  string
+	savedWindowState         windowState
+	windowStateLoaded        bool
+	tray                     trayController
+	windowIconMu             sync.Mutex
+	windowIconCleanup        func()
+	catalogSyncMu            sync.Mutex
+	catalogSyncTimer         *time.Timer
+	catalogRetryTimer        *time.Timer
+	catalogSyncActive        bool
+	catalogSyncQueued        bool
+	lastSyncError            string
+	lastSyncErrorAt          time.Time
+	coverRetryMu             sync.Mutex
+	coverRetryTimers         map[string]*time.Timer
+	coverRetryAttempts       map[string]int
+	coverRetryDelayFn        func(int) time.Duration
+	coverRetryStopped        bool
+	runtimeEventFn           func(string, any)
+	deleteQueueOnce          sync.Once
+	deleteGameMu             sync.Mutex
+	deleteGameQueue          chan queuedGameDelete
+	deleteGamePending        map[string]queuedGameDelete
+	backupUploadOnce         sync.Once
+	backupUploadMu           sync.Mutex
+	backupUploadQueue        chan queuedBackupUpload
+	backupUploadSet          map[string]queuedBackupUpload
+	backupDeleteOnce         sync.Once
+	backupDeleteMu           sync.Mutex
+	backupDeleteQueue        chan queuedBackupDelete
+	backupDeleteSet          map[string]queuedBackupDelete
+	syncCoordinatorMu        sync.Mutex
+	backgroundSyncMu         sync.Mutex
+	backgroundSyncTimer      backgroundTimer
+	backgroundSyncActive     bool
+	backgroundSyncQueued     bool
+	backgroundSyncStarted    bool
+	backgroundSyncStopped    bool
+	backgroundSyncScheduleID uint64
+	backgroundSyncAfterFn    func(time.Duration, func()) backgroundTimer
+	backgroundDeferredTimer  backgroundTimer
+	backgroundDeferredGames  map[string]bool
+	runningGameIDsFn         func([]core.Game) map[string]bool
+	runningGamesMu           sync.Mutex
+	runningGames             map[string]bool
+	syncInfraMu              sync.Mutex
+	deviceIndex              *core.DeviceIndexStore
+	saveChangeTracker        *core.SaveChangeTracker
+	syncGameMu               sync.Mutex
+	syncGameLocks            map[string]*sync.Mutex
+	switchStorageMu          sync.Mutex
+	switchStorageBusy        bool
+	remoteOpsMu              sync.RWMutex
+	handoffMu                sync.Mutex
+	catalogStoreFn           func(core.CloudflareAccount) (core.CatalogStore, error)
+	objectStoreFn            func(context.Context, core.CloudflareAccount) (core.ObjectStore, error)
+	verifyStorageFn          func(context.Context, core.CloudflareAccount) (core.CloudflareAccount, error)
 }
 
 type queuedGameDelete struct {
@@ -190,9 +203,15 @@ func NewApp() *App {
 		coverRetryTimers:   make(map[string]*time.Timer),
 		coverRetryAttempts: make(map[string]int),
 		coverRetryDelayFn:  coverRetryDelay,
-		catalogStoreFn:     newCatalogStore,
-		objectStoreFn:      newObjectStore,
-		verifyStorageFn:    verifyStorageAccount,
+		backgroundSyncAfterFn: func(delay time.Duration, callback func()) backgroundTimer {
+			return time.AfterFunc(delay, callback)
+		},
+		backgroundDeferredGames: make(map[string]bool),
+		runningGameIDsFn:        core.RunningGameIDs,
+		runningGames:            make(map[string]bool),
+		catalogStoreFn:          newCatalogStore,
+		objectStoreFn:           newObjectStore,
+		verifyStorageFn:         verifyStorageAccount,
 	}
 }
 
@@ -227,6 +246,7 @@ func (a *App) startup(ctx context.Context) {
 	// 上传/删除队列为纯内存队列，重启后从注册表重入未完成任务（M9）
 	go a.requeuePendingBackupOperations()
 	go a.verifyAccounts(false)
+	a.startBackgroundSyncScheduler()
 }
 
 // requeuePendingBackupOperations 启动时扫描全部游戏的 BackupRegistry：
@@ -313,6 +333,7 @@ func (a *App) domReady(ctx context.Context) {
 
 func (a *App) shutdown(ctx context.Context) {
 	a.ctx = ctx
+	a.stopBackgroundSyncScheduler()
 	a.closeSyncTracking()
 	a.stopCoverRetries()
 	if err := a.saveCurrentWindowState(); err != nil {
@@ -1746,10 +1767,12 @@ func (a *App) SavePreferences(preferences core.Preferences) (core.DashboardSnaps
 	if err != nil {
 		return core.DashboardSnapshot{}, err
 	}
-	defer finish()
 	if err := a.store.SavePreferences(preferences); err != nil {
+		finish()
 		return core.DashboardSnapshot{}, err
 	}
+	finish()
+	a.resetBackgroundSyncScheduler()
 	a.queueRemoteCatalogSync("preferences save")
 	return a.snapshot()
 }
@@ -3536,6 +3559,8 @@ func (a *App) pullRemoteCatalogInBackground(reason string) {
 		return
 	}
 	defer finish()
+	a.syncCoordinatorMu.Lock()
+	defer a.syncCoordinatorMu.Unlock()
 	changed, err := a.pullRemoteCatalog()
 	if err != nil {
 		wailsruntime.LogErrorf(a.ctx, "pull remote catalog in background during %s failed: %v", reason, err)
@@ -4210,6 +4235,7 @@ func (a *App) LaunchAndMonitorGame(gameID string) error {
 	}
 
 	pm := core.NewProcessMonitor()
+	a.markGameRunning(gameID, true)
 
 	onStart := func(pid int32) {
 		a.emitRuntimeEvent("game:started", gameID)
@@ -4217,15 +4243,22 @@ func (a *App) LaunchAndMonitorGame(gameID string) error {
 
 	onEnd := func(duration time.Duration) {
 		a.handleGameSessionEnded(gameID, duration)
+		a.markGameRunning(gameID, false)
+		a.requestBackgroundSync("game exited")
 	}
 
 	// 60 秒内未识别到游戏进程：不记时长、不做会话结束自动备份，只通知前端
 	onMiss := func() {
+		a.markGameRunning(gameID, false)
 		wailsruntime.LogWarningf(a.ctx, "game %s process not identified within monitor window; skip session-end backup and playtime", gameID)
 		a.emitRuntimeEvent("game:monitor_timeout", map[string]string{"gameId": gameID})
 	}
 
-	return pm.LaunchAndMonitor(a.ctx, game.InstallPath, onStart, onEnd, onMiss)
+	if err := pm.LaunchAndMonitor(a.ctx, game.InstallPath, onStart, onEnd, onMiss); err != nil {
+		a.markGameRunning(gameID, false)
+		return err
+	}
+	return nil
 }
 
 func (a *App) GetGameBackups(gameID string) (core.BackupListResult, error) {

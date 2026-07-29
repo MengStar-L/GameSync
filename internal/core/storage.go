@@ -28,6 +28,12 @@ type ObjectLister interface {
 	ListObjects(ctx context.Context, prefix string) ([]RemoteObjectInfo, error)
 }
 
+// RemoteManifestHeadLister is an optional lightweight capability used by the
+// background coordinator to discover changed manifests without loading them.
+type RemoteManifestHeadLister interface {
+	ListRemoteManifestHeads(ctx context.Context) ([]RemoteManifestHead, error)
+}
+
 // CatalogStore 承载目录索引与游戏清单（现由 D1 实现，WebDAV 用 JSON 文件 + ETag CAS 实现）
 type CatalogStore interface {
 	EnsureSchema(ctx context.Context) error
@@ -63,8 +69,9 @@ type StorageGateway struct {
 
 // 现有实现必须持续满足接口（编译期断言）
 var (
-	_ CatalogStore = (*D1Client)(nil)
-	_ ObjectStore  = (*R2Client)(nil)
+	_ CatalogStore             = (*D1Client)(nil)
+	_ RemoteManifestHeadLister = (*D1Client)(nil)
+	_ ObjectStore              = (*R2Client)(nil)
 )
 
 // AccountProvider 归一化账号的存储 provider：空值一律按 cloudflare 处理（历史数据兼容）

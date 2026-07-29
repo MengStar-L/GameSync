@@ -34,6 +34,7 @@ type DeviceGameIndex struct {
 	SyncConfigFingerprint string                     `json:"syncConfigFingerprint,omitempty"`
 	RemoteVersion         int                        `json:"remoteVersion,omitempty"`
 	RemoteManifestHash    string                     `json:"remoteManifestHash,omitempty"`
+	RemoteManifestToken   string                     `json:"remoteManifestToken,omitempty"`
 	GeneratedAt           time.Time                  `json:"generatedAt,omitempty" ts_type:"string"`
 	ScanState             string                     `json:"scanState"`
 	DirtyPaths            []string                   `json:"dirtyPaths,omitempty"`
@@ -213,6 +214,28 @@ func (s *DeviceIndexStore) MarkRebuild(gameID string) error {
 	game := next.Games[gameID]
 	game.ScanState = ScanStateRebuild
 	game.DirtyPaths = nil
+	next.Games[gameID] = game
+	return s.persistLocked(next)
+}
+
+func (s *DeviceIndexStore) UpdateRemoteManifestToken(gameID string, token string) error {
+	gameID = strings.TrimSpace(gameID)
+	if gameID == "" {
+		return errors.New("device index game ID is empty")
+	}
+	token = strings.TrimSpace(token)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, exists := s.index.Games[gameID]
+	if !exists {
+		return fmt.Errorf("device index game %s not found", gameID)
+	}
+	if current.RemoteManifestToken == token {
+		return nil
+	}
+	next := cloneDeviceIndex(s.index)
+	game := next.Games[gameID]
+	game.RemoteManifestToken = token
 	next.Games[gameID] = game
 	return s.persistLocked(next)
 }
@@ -416,6 +439,7 @@ func normalizeAndValidateDeviceIndex(index *DeviceIndex, deviceID string) error 
 		game.SavePath = normalizeIndexedSavePath(game.SavePath)
 		game.SyncConfigFingerprint = strings.TrimSpace(game.SyncConfigFingerprint)
 		game.RemoteManifestHash = strings.TrimSpace(game.RemoteManifestHash)
+		game.RemoteManifestToken = strings.TrimSpace(game.RemoteManifestToken)
 		game.GeneratedAt = game.GeneratedAt.UTC()
 		if game.RemoteVersion < 0 {
 			return fmt.Errorf("device index remote version is negative: %s", gameID)

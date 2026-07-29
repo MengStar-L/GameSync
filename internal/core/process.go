@@ -18,6 +18,56 @@ func NewProcessMonitor() *ProcessMonitor {
 	return &ProcessMonitor{}
 }
 
+// RunningGameIDs returns games whose install directory currently contains a
+// running executable. Processes that cannot expose their executable path are
+// ignored.
+func RunningGameIDs(games []Game) map[string]bool {
+	targets := make(map[string]string, len(games))
+	for _, game := range games {
+		gameID := strings.TrimSpace(game.ID)
+		installPath := strings.TrimSpace(game.InstallPath)
+		if gameID == "" || installPath == "" {
+			continue
+		}
+		directory := filepath.Dir(installPath)
+		if directory == "." {
+			directory = installPath
+		}
+		targets[gameID] = strings.ToLower(filepath.Clean(directory))
+	}
+	running := make(map[string]bool)
+	if len(targets) == 0 {
+		return running
+	}
+	pids, err := process.Pids()
+	if err != nil {
+		return running
+	}
+	for _, pid := range pids {
+		candidate, processErr := process.NewProcess(pid)
+		if processErr != nil {
+			continue
+		}
+		executable, executableErr := candidate.Exe()
+		if executableErr != nil || strings.TrimSpace(executable) == "" {
+			continue
+		}
+		executable = strings.ToLower(filepath.Clean(executable))
+		for gameID, directory := range targets {
+			if executableInDirectory(executable, directory) {
+				running[gameID] = true
+			}
+		}
+	}
+	return running
+}
+
+func executableInDirectory(executable string, directory string) bool {
+	executable = strings.TrimRight(strings.ToLower(filepath.Clean(executable)), string(filepath.Separator))
+	directory = strings.TrimRight(strings.ToLower(filepath.Clean(directory)), string(filepath.Separator))
+	return executable == directory || strings.HasPrefix(executable, directory+string(filepath.Separator))
+}
+
 // LaunchAndMonitor 尝试启动并追踪游戏。
 // 针对 Steam 游戏等启动器，直接运行的 exe 会立即退出，这里采用循环侦听其所处目录的后代进程。
 // 回调约定：仅“曾识别到游戏进程且该进程已退出”才调用 onEnd（真实会话结束）；

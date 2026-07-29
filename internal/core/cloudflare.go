@@ -694,6 +694,33 @@ func (c *D1Client) LoadRemoteManifest(ctx context.Context, gameID string) (Remot
 	return record, nil
 }
 
+func (c *D1Client) ListRemoteManifestHeads(ctx context.Context) ([]RemoteManifestHead, error) {
+	if err := c.EnsureSchema(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := c.Query(ctx, `SELECT game_id, version, updated_at, updated_by_device FROM sync_manifests ORDER BY game_id;`)
+	if err != nil {
+		return nil, err
+	}
+	heads := make([]RemoteManifestHead, 0, len(rows))
+	for _, row := range rows {
+		version := int(asInt64(row["version"]))
+		head := RemoteManifestHead{
+			GameID:          strings.TrimSpace(fmt.Sprintf("%v", row["game_id"])),
+			Version:         version,
+			Token:           fmt.Sprintf("d1:%d", version),
+			UpdatedByDevice: strings.TrimSpace(fmt.Sprintf("%v", row["updated_by_device"])),
+		}
+		if updatedAt, parseErr := time.Parse(time.RFC3339Nano, fmt.Sprintf("%v", row["updated_at"])); parseErr == nil {
+			head.UpdatedAt = updatedAt
+		}
+		if head.GameID != "" {
+			heads = append(heads, head)
+		}
+	}
+	return heads, nil
+}
+
 func (c *D1Client) SaveRemoteManifest(ctx context.Context, record RemoteManifestRecord) error {
 	manifestJSON, err := json.Marshal(record.Manifest)
 	if err != nil {

@@ -34,28 +34,29 @@ type DeviceInfo struct {
 }
 
 type Preferences struct {
-	AutoSyncOnLaunch           bool      `json:"autoSyncOnLaunch"`
-	StartupSyncMode            string    `json:"startupSyncMode"`
-	ConflictPolicy             string    `json:"conflictPolicy"`
-	DefaultInstallDir          string    `json:"defaultInstallDir"`
-	DefaultSaveDir             string    `json:"defaultSaveDir"`
-	DefaultSteamInstallDir     string    `json:"defaultSteamInstallDir"`
-	DefaultSteamSaveDir        string    `json:"defaultSteamSaveDir"`
-	DefaultThirdInstallDir     string    `json:"defaultThirdInstallDir"`
-	DefaultThirdSaveDir        string    `json:"defaultThirdSaveDir"`
-	RawgAPIKey                 string    `json:"rawgApiKey"`
-	SteamGridDBAPIKey          string    `json:"steamGridDbApiKey"`
-	FavoriteGames              []string  `json:"favoriteGames"`
-	TagOrder                   []string  `json:"tagOrder"`
-	PinnedTags                 []string  `json:"pinnedTags"`
-	SidebarNavOrder            []string  `json:"sidebarNavOrder"`
-	RawgAPIKeyUpdatedAt        time.Time `json:"rawgApiKeyUpdatedAt,omitempty" ts_type:"string"`
-	SteamGridDBAPIKeyUpdatedAt time.Time `json:"steamGridDbApiKeyUpdatedAt,omitempty" ts_type:"string"`
-	FavoriteGamesUpdatedAt     time.Time `json:"favoriteGamesUpdatedAt,omitempty" ts_type:"string"`
-	TagOrderUpdatedAt          time.Time `json:"tagOrderUpdatedAt,omitempty" ts_type:"string"`
-	PinnedTagsUpdatedAt        time.Time `json:"pinnedTagsUpdatedAt,omitempty" ts_type:"string"`
-	SidebarNavOrderUpdatedAt   time.Time `json:"sidebarNavOrderUpdatedAt,omitempty" ts_type:"string"`
-	GameOrderUpdatedAt         time.Time `json:"gameOrderUpdatedAt,omitempty" ts_type:"string"`
+	AutoSyncOnLaunch              bool      `json:"autoSyncOnLaunch"`
+	StartupSyncMode               string    `json:"startupSyncMode"`
+	ConflictPolicy                string    `json:"conflictPolicy"`
+	BackgroundSyncIntervalSeconds int       `json:"backgroundSyncIntervalSeconds"`
+	DefaultInstallDir             string    `json:"defaultInstallDir"`
+	DefaultSaveDir                string    `json:"defaultSaveDir"`
+	DefaultSteamInstallDir        string    `json:"defaultSteamInstallDir"`
+	DefaultSteamSaveDir           string    `json:"defaultSteamSaveDir"`
+	DefaultThirdInstallDir        string    `json:"defaultThirdInstallDir"`
+	DefaultThirdSaveDir           string    `json:"defaultThirdSaveDir"`
+	RawgAPIKey                    string    `json:"rawgApiKey"`
+	SteamGridDBAPIKey             string    `json:"steamGridDbApiKey"`
+	FavoriteGames                 []string  `json:"favoriteGames"`
+	TagOrder                      []string  `json:"tagOrder"`
+	PinnedTags                    []string  `json:"pinnedTags"`
+	SidebarNavOrder               []string  `json:"sidebarNavOrder"`
+	RawgAPIKeyUpdatedAt           time.Time `json:"rawgApiKeyUpdatedAt,omitempty" ts_type:"string"`
+	SteamGridDBAPIKeyUpdatedAt    time.Time `json:"steamGridDbApiKeyUpdatedAt,omitempty" ts_type:"string"`
+	FavoriteGamesUpdatedAt        time.Time `json:"favoriteGamesUpdatedAt,omitempty" ts_type:"string"`
+	TagOrderUpdatedAt             time.Time `json:"tagOrderUpdatedAt,omitempty" ts_type:"string"`
+	PinnedTagsUpdatedAt           time.Time `json:"pinnedTagsUpdatedAt,omitempty" ts_type:"string"`
+	SidebarNavOrderUpdatedAt      time.Time `json:"sidebarNavOrderUpdatedAt,omitempty" ts_type:"string"`
+	GameOrderUpdatedAt            time.Time `json:"gameOrderUpdatedAt,omitempty" ts_type:"string"`
 }
 
 type CloudflareAccount struct {
@@ -438,19 +439,39 @@ type RemoteManifestRecord struct {
 	UpdatedByDevice string       `json:"updatedByDevice"`
 }
 
+type RemoteManifestHead struct {
+	GameID          string    `json:"gameId"`
+	Version         int       `json:"version"`
+	Token           string    `json:"token"`
+	UpdatedAt       time.Time `json:"updatedAt,omitempty" ts_type:"string"`
+	UpdatedByDevice string    `json:"updatedByDevice,omitempty"`
+}
+
+const DefaultBackgroundSyncIntervalSeconds = 60
+
+func IsValidBackgroundSyncInterval(seconds int) bool {
+	switch seconds {
+	case 0, 30, 60, 300:
+		return true
+	default:
+		return false
+	}
+}
+
 func DefaultPreferences() Preferences {
 	return Preferences{
-		AutoSyncOnLaunch:       true,
-		StartupSyncMode:        "smart",
-		ConflictPolicy:         "manual",
-		DefaultInstallDir:      "",
-		DefaultSaveDir:         "",
-		DefaultSteamInstallDir: "",
-		DefaultSteamSaveDir:    "",
-		DefaultThirdInstallDir: "",
-		DefaultThirdSaveDir:    "",
-		RawgAPIKey:             "",
-		SteamGridDBAPIKey:      "",
+		AutoSyncOnLaunch:              true,
+		StartupSyncMode:               "smart",
+		ConflictPolicy:                "manual",
+		BackgroundSyncIntervalSeconds: DefaultBackgroundSyncIntervalSeconds,
+		DefaultInstallDir:             "",
+		DefaultSaveDir:                "",
+		DefaultSteamInstallDir:        "",
+		DefaultSteamSaveDir:           "",
+		DefaultThirdInstallDir:        "",
+		DefaultThirdSaveDir:           "",
+		RawgAPIKey:                    "",
+		SteamGridDBAPIKey:             "",
 	}
 }
 

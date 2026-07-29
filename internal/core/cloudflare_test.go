@@ -89,6 +89,32 @@ func TestRemoteCatalogPreferencesStripsAPIKeys(t *testing.T) {
 	}
 }
 
+func TestD1ListRemoteManifestHeadsUsesSingleQuery(t *testing.T) {
+	requests := 0
+	client := newD1HandoffTestClient(t, func(request *http.Request) (*http.Response, error) {
+		requests++
+		var query d1QueryRequest
+		if err := json.NewDecoder(request.Body).Decode(&query); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(query.SQL, "FROM sync_manifests ORDER BY game_id") {
+			t.Fatalf("unexpected D1 query: %s", query.SQL)
+		}
+		return d1TestResponse(t, []map[string]any{
+			{"game_id": "game-1", "version": 3, "updated_at": "2026-07-29T01:02:03Z", "updated_by_device": "device-a"},
+			{"game_id": "game-2", "version": 8, "updated_at": "2026-07-29T02:03:04Z", "updated_by_device": "device-b"},
+		}, 0), nil
+	})
+
+	heads, err := client.ListRemoteManifestHeads(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 || len(heads) != 2 || heads[0].Token != "d1:3" || heads[1].Version != 8 || heads[1].UpdatedByDevice != "device-b" {
+		t.Fatalf("heads=%+v requests=%d", heads, requests)
+	}
+}
+
 func TestR2UsageCacheRoundTripAndInvalidation(t *testing.T) {
 	client := &R2Client{bucket: "bucket-" + NewID()}
 

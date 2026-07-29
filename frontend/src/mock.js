@@ -135,6 +135,7 @@ export function createMockBackend() {
       autoSyncOnLaunch: true,
       startupSyncMode: "smart",
       conflictPolicy: "manual",
+      backgroundSyncIntervalSeconds: 60,
       defaultInstallDir: "",
       defaultSaveDir: "",
       defaultSteamInstallDir: "",

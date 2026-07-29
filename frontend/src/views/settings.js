@@ -273,6 +273,17 @@ export function mount(root, ctx) {
     prefsInit.conflictPolicy || "manual",
   );
 
+  const backgroundSyncSelect = selectField(
+    "后台检查间隔",
+    [
+      ["0", "关闭"],
+      ["30", "30 秒"],
+      ["60", "60 秒"],
+      ["300", "5 分钟"],
+    ],
+    String(prefsInit.backgroundSyncIntervalSeconds ?? 60),
+  );
+
   const rawgField = secretField("RAWG API Key", prefsInit.rawgApiKey, "用于在详情页搜索游戏资料与封面");
   const sgdbField = secretField("SteamGridDB API Key", prefsInit.steamGridDbApiKey, "用于拉取更高质量的游戏封面");
 
@@ -287,6 +298,7 @@ export function mount(root, ctx) {
               autoSyncOnLaunch: autoSyncChk.checked,
               startupSyncMode: modeSelect.sel.value,
               conflictPolicy: policySelect.sel.value,
+              backgroundSyncIntervalSeconds: Number(backgroundSyncSelect.sel.value),
               rawgApiKey: rawgField.input.value.trim(),
               steamGridDbApiKey: sgdbField.input.value.trim(),
             });
@@ -309,7 +321,7 @@ export function mount(root, ctx) {
       autoSyncChk,
       h("span", {}, "启动游戏前自动同步存档"),
     ),
-    h("div", { class: "set-form-grid" }, modeSelect.field, policySelect.field),
+    h("div", { class: "set-form-grid" }, modeSelect.field, policySelect.field, backgroundSyncSelect.field),
     rawgField.field,
     sgdbField.field,
     h("div", { class: "set-actions" }, savePrefsBtn),

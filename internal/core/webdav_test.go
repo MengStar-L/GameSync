@@ -205,15 +205,18 @@ func (s *fakeDavServer) handlePropfind(w http.ResponseWriter, r *http.Request, p
 		}
 		builder.WriteString(`</d:prop></d:propstat></d:response>`)
 	} else {
-		fmt.Fprintf(&builder, `<d:response><d:href>%s</d:href><d:propstat><d:status>HTTP/1.1 200 OK</d:status><d:prop><d:resourcetype/><d:getcontentlength>%d</d:getcontentlength></d:prop></d:propstat></d:response>`, path, len(file.data))
+		writeFakeDavFileProp(&builder, path, file, !s.noETag)
 	}
-	if r.Header.Get("Depth") == "infinity" && isCollection {
+	if (r.Header.Get("Depth") == "1" || r.Header.Get("Depth") == "infinity") && isCollection {
 		prefix := path + "/"
 		for key, entry := range s.files {
 			if !strings.HasPrefix(key, prefix) {
 				continue
 			}
-			fmt.Fprintf(&builder, `<d:response><d:href>%s</d:href><d:propstat><d:status>HTTP/1.1 200 OK</d:status><d:prop><d:resourcetype/><d:getcontentlength>%d</d:getcontentlength></d:prop></d:propstat></d:response>`, key, len(entry.data))
+			if r.Header.Get("Depth") == "1" && parentOf(key) != path {
+				continue
+			}
+			writeFakeDavFileProp(&builder, key, entry, !s.noETag)
 		}
 	}
 	builder.WriteString(`</d:multistatus>`)
@@ -221,6 +224,14 @@ func (s *fakeDavServer) handlePropfind(w http.ResponseWriter, r *http.Request, p
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.WriteHeader(http.StatusMultiStatus)
 	_, _ = io.WriteString(w, builder.String())
+}
+
+func writeFakeDavFileProp(builder *strings.Builder, path string, file *fakeDavFile, includeETag bool) {
+	fmt.Fprintf(builder, `<d:response><d:href>%s</d:href><d:propstat><d:status>HTTP/1.1 200 OK</d:status><d:prop><d:resourcetype/><d:getcontentlength>%d</d:getcontentlength>`, path, len(file.data))
+	if includeETag {
+		fmt.Fprintf(builder, `<d:getetag>%s</d:getetag>`, file.etag)
+	}
+	builder.WriteString(`</d:prop></d:propstat></d:response>`)
 }
 
 // ---- 测试辅助 ----
@@ -504,6 +515,56 @@ func TestWebdavNoETagWriteReadFallback(t *testing.T) {
 	}
 	if loaded, err := client.LoadRemoteManifest(ctx, "g1"); err != nil || loaded.Version != 1 {
 		t.Fatalf("no-etag manifest load = %+v, err = %v", loaded, err)
+	}
+}
+
+func TestWebdavListRemoteManifestHeadsUsesETags(t *testing.T) {
+	fake, server := startFakeDav(t)
+	client := newTestWebdavClient(t, server.URL)
+	ctx := context.Background()
+	for _, record := range []RemoteManifestRecord{
+		{GameID: "game-2", Version: 4, Manifest: SyncManifest{Version: 4, Hash: "h4"}},
+		{GameID: "game-1", Version: 2, Manifest: SyncManifest{Version: 2, Hash: "h2"}},
+	} {
+		if err := client.SaveRemoteManifest(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fake.mu.Lock()
+	fake.methodCount = map[string]int{}
+	fake.mu.Unlock()
+
+	heads, err := client.ListRemoteManifestHeads(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	propfinds := fake.methodCount["PROPFIND"]
+	gets := fake.methodCount[http.MethodGet]
+	fake.mu.Unlock()
+	if len(heads) != 2 || heads[0].GameID != "game-1" || !strings.HasPrefix(heads[0].Token, "etag:") || heads[1].GameID != "game-2" {
+		t.Fatalf("heads = %+v", heads)
+	}
+	if propfinds != 1 || gets != 0 {
+		t.Fatalf("requests: PROPFIND=%d GET=%d", propfinds, gets)
+	}
+}
+
+func TestWebdavListRemoteManifestHeadsFallsBackToContentToken(t *testing.T) {
+	fake, server := startFakeDav(t)
+	fake.noETag = true
+	client := newTestWebdavClient(t, server.URL)
+	record := RemoteManifestRecord{GameID: "game-1", Version: 7, Manifest: SyncManifest{Version: 7, Hash: "h7"}, UpdatedByDevice: "device-a"}
+	if err := client.SaveRemoteManifest(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+
+	heads, err := client.ListRemoteManifestHeads(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(heads) != 1 || heads[0].Version != 7 || !strings.HasPrefix(heads[0].Token, "body:") || heads[0].UpdatedByDevice != "device-a" {
+		t.Fatalf("heads = %+v", heads)
 	}
 }
 
