@@ -11,13 +11,27 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 type BackupManager struct {
 	Engine *Engine
+}
+
+func BackupObjectKey(gameID, deviceID, filename string) string {
+	gameID = strings.TrimSpace(gameID)
+	deviceID = strings.TrimSpace(deviceID)
+	filename = strings.TrimSpace(filename)
+	if deviceID == "" {
+		return fmt.Sprintf("backups/%s/%s", gameID, filename)
+	}
+	return fmt.Sprintf("backups/%s/%s/%s", gameID, deviceID, filename)
+}
+
+func BackupObjectKeyForRecord(gameID string, record BackupRecord) string {
+	if key := strings.TrimSpace(record.ObjectKey); key != "" {
+		return key
+	}
+	return BackupObjectKey(gameID, record.SourceDeviceID, record.Filename)
 }
 
 func NewBackupManager(engine *Engine) *BackupManager {
@@ -28,6 +42,34 @@ func (bm *BackupManager) EnsureLocalBackupDir(dataDir string, gameID string) str
 	dir := filepath.Join(dataDir, "backups", gameID)
 	_ = os.MkdirAll(dir, 0o755)
 	return dir
+}
+
+func BackupLocalPathForRecord(dataDir string, gameID string, record BackupRecord) string {
+	root := filepath.Join(dataDir, "backups", strings.TrimSpace(gameID))
+	filename := strings.TrimSpace(record.Filename)
+	deviceID := strings.TrimSpace(record.SourceDeviceID)
+	if deviceID == "" || deviceID != filepath.Base(deviceID) || strings.ContainsAny(deviceID, `/\`) {
+		return filepath.Join(root, filename)
+	}
+	return filepath.Join(root, deviceID, filename)
+}
+
+func existingBackupLocalPath(dataDir string, gameID string, record BackupRecord, allowLegacyFallback bool) string {
+	preferred := BackupLocalPathForRecord(dataDir, gameID, record)
+	if _, err := os.Stat(preferred); err == nil {
+		return preferred
+	}
+	legacy := filepath.Join(dataDir, "backups", strings.TrimSpace(gameID), strings.TrimSpace(record.Filename))
+	if allowLegacyFallback && preferred != legacy {
+		if _, err := os.Stat(legacy); err == nil {
+			return legacy
+		}
+	}
+	return preferred
+}
+
+func ExistingBackupLocalPathForRecord(dataDir string, gameID string, record BackupRecord) string {
+	return existingBackupLocalPath(dataDir, gameID, record, true)
 }
 
 func zipDirectory(source string, target string) error {
@@ -91,12 +133,11 @@ func zipDirectory(source string, target string) error {
 	})
 }
 
-func (bm *BackupManager) CreateBackup(ctx context.Context, game Game, backupType string, name string, dataDir string, gateway *CloudflareGateway) (*Backup, error) {
+func (bm *BackupManager) CreateBackup(ctx context.Context, game Game, backupType string, name string, sourceDeviceID string, dataDir string, gateway *StorageGateway) (*Backup, error) {
 	if strings.TrimSpace(game.SavePath) == "" {
 		return nil, fmt.Errorf("save path is empty")
 	}
 
-	backupDir := bm.EnsureLocalBackupDir(dataDir, game.ID)
 	timestamp := time.Now().Format("20060102_150405_000000000")
 	filename := fmt.Sprintf("backup_manual_%s.zip", timestamp)
 	if strings.EqualFold(strings.TrimSpace(backupType), "auto") {
@@ -106,7 +147,11 @@ func (bm *BackupManager) CreateBackup(ctx context.Context, game Game, backupType
 		backupType = "manual"
 	}
 
-	targetLocalPath := filepath.Join(backupDir, filename)
+	record := BackupRecord{Filename: filename, SourceDeviceID: strings.TrimSpace(sourceDeviceID)}
+	targetLocalPath := BackupLocalPathForRecord(dataDir, game.ID, record)
+	if err := os.MkdirAll(filepath.Dir(targetLocalPath), 0o755); err != nil {
+		return nil, fmt.Errorf("create local backup directory: %w", err)
+	}
 	if err := zipDirectory(game.SavePath, targetLocalPath); err != nil {
 		return nil, fmt.Errorf("create backup archive: %w", err)
 	}
@@ -116,83 +161,79 @@ func (bm *BackupManager) CreateBackup(ctx context.Context, game Game, backupType
 		return nil, err
 	}
 
-	if backupType == "auto" {
-		files, _ := os.ReadDir(backupDir)
-		for _, file := range files {
-			if strings.HasPrefix(file.Name(), "backup_auto_") && file.Name() != filename {
-				_ = os.Remove(filepath.Join(backupDir, file.Name()))
-			}
-		}
-	}
+	// 旧的 backup_auto_*.zip 不在此处清理：上传成功前删除旧档会在上传失败时
+	// 造成本地/云端都没有可用自动备份（M9），清理移到上传成功回调中执行。
 
 	backup := &Backup{
-		ID:          NewID(),
-		GameID:      game.ID,
-		Type:        backupType,
-		Name:        name,
-		Filename:    filename,
-		Size:        info.Size(),
-		CreatedAt:   time.Now(),
-		LocalExists: true,
-		Status:      BackupStatusReady,
+		GameID:         game.ID,
+		Type:           backupType,
+		Name:           name,
+		Filename:       filename,
+		Size:           info.Size(),
+		CreatedAt:      time.Now(),
+		SourceDeviceID: strings.TrimSpace(sourceDeviceID),
+		LocalExists:    true,
+		Status:         BackupStatusReady,
 	}
-	if backupHash, err := sha256File(targetLocalPath); err == nil {
-		backup.SHA256 = backupHash
+	backupHash, err := sha256File(targetLocalPath)
+	if err != nil {
+		return nil, fmt.Errorf("hash backup archive: %w", err)
 	}
+	backup.SHA256 = backupHash
+	backupRecord := BackupRecord{Filename: filename, SourceDeviceID: backup.SourceDeviceID}
+	backup.ID = BackupRecordID(backupRecord)
+	backup.ObjectKey = BackupObjectKeyForRecord(game.ID, backupRecord)
 	manifest, manifestErr := BuildLocalManifest(game.SavePath, game.Sync.IncludePatterns, game.Sync.ExcludePatterns)
 	if manifestErr == nil {
 		backup.SourceManifestHash = manifest.Hash
 		backup.SourceManifestGeneratedAt = manifest.GeneratedAt
 	}
 
-	if gateway != nil && gateway.R2 != nil {
-		remoteKey := fmt.Sprintf("backups/%s/%s", game.ID, filename)
-		if err := gateway.R2.PutObjectFromFile(ctx, remoteKey, targetLocalPath); err != nil {
+	if gateway != nil && gateway.Objects != nil {
+		remoteKey := backup.ObjectKey
+		if err := gateway.Objects.PutObjectFromFile(ctx, remoteKey, targetLocalPath); err != nil {
 			return nil, fmt.Errorf("upload backup to cloud: %w", err)
 		}
 		backup.CloudExists = true
 		if backupType == "auto" {
-			bm.CleanupCloudAutoBackups(ctx, gateway, game.ID, filename)
+			bm.CleanupCloudAutoBackups(ctx, gateway, game.ID, backup.SourceDeviceID, filename)
 		}
 	}
 
 	return backup, nil
 }
 
-func (bm *BackupManager) CleanupCloudAutoBackups(ctx context.Context, gateway *CloudflareGateway, gameID string, keepFilename string) {
-	if gateway == nil || gateway.R2 == nil {
+func (bm *BackupManager) CleanupCloudAutoBackups(ctx context.Context, gateway *StorageGateway, gameID string, sourceDeviceID string, keepFilename string) {
+	if gateway == nil || gateway.Objects == nil {
+		return
+	}
+	lister, ok := gateway.Objects.(ObjectLister)
+	if !ok {
 		return
 	}
 	prefix := fmt.Sprintf("backups/%s/", gameID)
-	paginator := s3.NewListObjectsV2Paginator(gateway.R2.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(gateway.R2.bucket),
-		Prefix: aws.String(prefix),
-	})
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			return
-		}
-		for _, obj := range page.Contents {
-			key := aws.ToString(obj.Key)
-			filename := filepath.Base(key)
-			if strings.HasPrefix(filename, "backup_auto_") && filename != keepFilename {
-				_, _ = gateway.R2.client.DeleteObject(ctx, &s3.DeleteObjectInput{
-					Bucket: aws.String(gateway.R2.bucket),
-					Key:    aws.String(key),
-				})
-			}
+	if strings.TrimSpace(sourceDeviceID) != "" {
+		prefix = BackupObjectKey(gameID, sourceDeviceID, "")
+	}
+	objects, err := lister.ListObjects(ctx, prefix)
+	if err != nil {
+		return
+	}
+	for _, object := range objects {
+		filename := filepath.Base(object.Key)
+		if strings.HasPrefix(filename, "backup_auto_") && filename != keepFilename {
+			_ = gateway.Objects.DeleteObject(ctx, object.Key)
 		}
 	}
 }
 
-func backupRecordForFilename(filename string, registry []BackupRecord) (BackupRecord, bool) {
-	filename = strings.TrimSpace(filename)
-	if filename == "" {
+func backupRecordForID(backupID string, registry []BackupRecord) (BackupRecord, bool) {
+	backupID = strings.TrimSpace(backupID)
+	if backupID == "" {
 		return BackupRecord{}, false
 	}
 	for _, record := range registry {
-		if strings.TrimSpace(record.Filename) == filename {
+		if BackupRecordID(record) == backupID {
 			return record, true
 		}
 	}
@@ -212,6 +253,7 @@ func applyBackupRecord(backup *Backup, record BackupRecord) {
 	if strings.TrimSpace(record.AccountID) != "" {
 		backup.StorageAccountID = record.AccountID
 	}
+	backup.ObjectKey = strings.TrimSpace(record.ObjectKey)
 	if !record.CreatedAt.IsZero() {
 		backup.CreatedAt = record.CreatedAt
 	}
@@ -250,6 +292,7 @@ func normalizedBackupDisplayName(record BackupRecord) string {
 
 func normalizeBackupRecordStatus(record BackupRecord) BackupRecord {
 	record.AccountID = strings.TrimSpace(record.AccountID)
+	record.ObjectKey = strings.TrimSpace(record.ObjectKey)
 	record.Type = strings.TrimSpace(record.Type)
 	record.Name = strings.TrimSpace(record.Name)
 	record.SHA256 = strings.TrimSpace(record.SHA256)
@@ -278,60 +321,31 @@ func normalizeBackupRecordStatus(record BackupRecord) BackupRecord {
 	return record
 }
 
-func (bm *BackupManager) listLocalBackupFiles(gameID string, backupDir string) map[string]Backup {
-	files, _ := os.ReadDir(backupDir)
-	backups := make(map[string]Backup)
-	for _, file := range files {
-		if file.IsDir() || !strings.HasSuffix(file.Name(), ".zip") {
-			continue
-		}
-		info, err := file.Info()
-		if err != nil {
-			continue
-		}
-		filename := strings.TrimSpace(file.Name())
-		backups[filename] = Backup{
-			ID:          NewID(),
-			GameID:      gameID,
-			Filename:    filename,
-			Size:        info.Size(),
-			CreatedAt:   info.ModTime(),
-			LocalExists: true,
-			Status:      BackupStatusReady,
-		}
-		if backupHash, err := sha256File(filepath.Join(backupDir, filename)); err == nil {
-			backup := backups[filename]
-			backup.SHA256 = backupHash
-			backups[filename] = backup
-		}
+func (bm *BackupManager) listRemoteBackupFiles(ctx context.Context, gameID string, accountID string, gateway *StorageGateway) (map[string]Backup, error) {
+	if gateway == nil || gateway.Objects == nil {
+		return map[string]Backup{}, nil
 	}
-	return backups
-}
-
-func (bm *BackupManager) listRemoteBackupFiles(ctx context.Context, gameID string, accountID string, gateway *CloudflareGateway) (map[string]Backup, error) {
-	if gateway == nil || gateway.R2 == nil {
+	lister, ok := gateway.Objects.(ObjectLister)
+	if !ok {
 		return map[string]Backup{}, nil
 	}
 	prefix := fmt.Sprintf("backups/%s/", gameID)
-	paginator := s3.NewListObjectsV2Paginator(gateway.R2.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(gateway.R2.bucket),
-		Prefix: aws.String(prefix),
-	})
+	objects, err := lister.ListObjects(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
 	backups := make(map[string]Backup)
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			return nil, err
-		}
-		for _, obj := range page.Contents {
-			filename := strings.TrimSpace(filepath.Base(aws.ToString(obj.Key)))
-			backups[filename] = Backup{
+	{
+		for _, obj := range objects {
+			filename := strings.TrimSpace(filepath.Base(obj.Key))
+			backups[obj.Key] = Backup{
 				ID:               NewID(),
 				GameID:           gameID,
 				Filename:         filename,
-				Size:             aws.ToInt64(obj.Size),
+				Size:             obj.Size,
 				StorageAccountID: accountID,
-				CreatedAt:        aws.ToTime(obj.LastModified),
+				ObjectKey:        obj.Key,
+				CreatedAt:        obj.LastModified,
 				CloudExists:      true,
 				Status:           BackupStatusReady,
 			}
@@ -340,16 +354,14 @@ func (bm *BackupManager) listRemoteBackupFiles(ctx context.Context, gameID strin
 	return backups, nil
 }
 
-func backupRouteForFilename(game Game, filename string) string {
-	if record, ok := backupRecordForFilename(filename, game.BackupRegistry); ok {
-		return strings.TrimSpace(record.AccountID)
+func (bm *BackupManager) GetBackups(ctx context.Context, game Game, dataDir string, gateways map[string]*StorageGateway) (BackupListResult, error) {
+	bm.EnsureLocalBackupDir(dataDir, game.ID)
+	filenameCounts := make(map[string]int)
+	for _, record := range game.BackupRegistry {
+		if record.DeletedAt == nil {
+			filenameCounts[strings.TrimSpace(record.Filename)]++
+		}
 	}
-	return ""
-}
-
-func (bm *BackupManager) GetBackups(ctx context.Context, game Game, dataDir string, gateways map[string]*CloudflareGateway) (BackupListResult, error) {
-	backupDir := bm.EnsureLocalBackupDir(dataDir, game.ID)
-	localBackups := bm.listLocalBackupFiles(game.ID, backupDir)
 
 	failedAccounts := make([]string, 0)
 	remoteBackups := make(map[string]map[string]Backup)
@@ -369,11 +381,12 @@ func (bm *BackupManager) GetBackups(ctx context.Context, game Game, dataDir stri
 			continue
 		}
 		backup := Backup{
-			ID:                        NewID(),
+			ID:                        BackupRecordID(record),
 			GameID:                    game.ID,
 			Type:                      record.Type,
 			Name:                      normalizedBackupDisplayName(record),
 			Filename:                  record.Filename,
+			ObjectKey:                 BackupObjectKeyForRecord(game.ID, record),
 			StorageAccountID:          record.AccountID,
 			CreatedAt:                 record.CreatedAt,
 			SourceDeviceID:            record.SourceDeviceID,
@@ -385,16 +398,17 @@ func (bm *BackupManager) GetBackups(ctx context.Context, game Game, dataDir stri
 			LastError:                 record.LastError,
 			LastDeleteError:           record.LastDeleteError,
 		}
-		if localBackup, ok := localBackups[backup.Filename]; ok {
+		localPath := existingBackupLocalPath(dataDir, game.ID, record, filenameCounts[record.Filename] == 1)
+		if info, err := os.Stat(localPath); err == nil && !info.IsDir() {
 			backup.LocalExists = true
-			backup.Size = localBackup.Size
+			backup.Size = info.Size()
 			if backup.CreatedAt.IsZero() {
-				backup.CreatedAt = localBackup.CreatedAt
+				backup.CreatedAt = info.ModTime()
 			}
 		}
 		if accountID := strings.TrimSpace(backup.StorageAccountID); accountID != "" {
 			if accountBackups, ok := remoteBackups[accountID]; ok {
-				if remoteBackup, ok := accountBackups[backup.Filename]; ok {
+				if remoteBackup, ok := accountBackups[backup.ObjectKey]; ok {
 					backup.CloudExists = true
 					if backup.Size == 0 {
 						backup.Size = remoteBackup.Size
@@ -419,35 +433,73 @@ func (bm *BackupManager) GetBackups(ctx context.Context, game Game, dataDir stri
 	}, nil
 }
 
-func (bm *BackupManager) RestoreBackup(ctx context.Context, game Game, filename string, dataDir string, gateways map[string]*CloudflareGateway) error {
-	backupDir := bm.EnsureLocalBackupDir(dataDir, game.ID)
+func (bm *BackupManager) RestoreBackup(ctx context.Context, game Game, backupID string, dataDir string, gateways map[string]*StorageGateway) error {
+	record, ok := backupRecordForID(backupID, game.BackupRegistry)
+	if !ok {
+		return fmt.Errorf("backup %s not found", backupID)
+	}
+	filename := record.Filename
 	filename, err := safeBackupFilename(filename)
 	if err != nil {
 		return err
 	}
-	localPath := filepath.Join(backupDir, filename)
-	record, _ := backupRecordForFilename(filename, game.BackupRegistry)
+	matchingFilenames := 0
+	for _, candidate := range game.BackupRegistry {
+		if candidate.DeletedAt == nil && strings.TrimSpace(candidate.Filename) == filename {
+			matchingFilenames++
+		}
+	}
+	localPath := existingBackupLocalPath(dataDir, game.ID, record, matchingFilenames == 1)
 	expectedSHA256 := strings.TrimSpace(record.SHA256)
 
+	needsDownload := false
+	localExists := false
 	if _, err := os.Stat(localPath); errors.Is(err, os.ErrNotExist) {
-		remoteKey := fmt.Sprintf("backups/%s/%s", game.ID, filename)
+		needsDownload = true
+	} else if err != nil {
+		return fmt.Errorf("stat local backup: %w", err)
+	} else if expectedSHA256 != "" {
+		localExists = true
+		actualSHA256, hashErr := sha256File(localPath)
+		needsDownload = hashErr != nil || !strings.EqualFold(actualSHA256, expectedSHA256)
+	} else {
+		localExists = true
+	}
+
+	if needsDownload {
+		remoteKey := BackupObjectKeyForRecord(game.ID, record)
 		if len(gateways) == 0 {
+			if localExists {
+				return verifyBackupArchive(localPath, expectedSHA256)
+			}
 			return fmt.Errorf("backup not found locally and no cloud storage is available")
 		}
 
+		targetPath := BackupLocalPathForRecord(dataDir, game.ID, record)
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			return fmt.Errorf("create local backup directory: %w", err)
+		}
+		tempFile, err := os.CreateTemp(filepath.Dir(targetPath), ".backup-download-*.zip")
+		if err != nil {
+			return fmt.Errorf("create backup download file: %w", err)
+		}
+		tempPath := tempFile.Name()
+		_ = tempFile.Close()
+		defer os.Remove(tempPath)
+
 		var lastErr error
-		if routedAccountID := backupRouteForFilename(game, filename); routedAccountID != "" {
+		if routedAccountID := strings.TrimSpace(record.AccountID); routedAccountID != "" {
 			gateway := gateways[routedAccountID]
-			if gateway == nil || gateway.R2 == nil {
+			if gateway == nil || gateway.Objects == nil {
 				return fmt.Errorf("backup %s is routed to account %s, but that storage is not available", filename, routedAccountID)
 			}
-			lastErr = gateway.R2.DownloadObjectToFile(ctx, remoteKey, localPath)
+			lastErr = gateway.Objects.DownloadObjectToFile(ctx, remoteKey, tempPath)
 		} else {
 			for _, gateway := range gateways {
-				if gateway == nil || gateway.R2 == nil {
+				if gateway == nil || gateway.Objects == nil {
 					continue
 				}
-				lastErr = gateway.R2.DownloadObjectToFile(ctx, remoteKey, localPath)
+				lastErr = gateway.Objects.DownloadObjectToFile(ctx, remoteKey, tempPath)
 				if lastErr == nil {
 					break
 				}
@@ -456,6 +508,13 @@ func (bm *BackupManager) RestoreBackup(ctx context.Context, game Game, filename 
 		if lastErr != nil {
 			return fmt.Errorf("download backup from cloud: %w", lastErr)
 		}
+		if err := verifyBackupArchive(tempPath, expectedSHA256); err != nil {
+			return err
+		}
+		if err := os.Rename(tempPath, targetPath); err != nil {
+			return fmt.Errorf("cache downloaded backup: %w", err)
+		}
+		localPath = targetPath
 	}
 
 	if err := verifyBackupArchive(localPath, expectedSHA256); err != nil {
@@ -594,39 +653,47 @@ func extractBackupArchive(archivePath string, destinationRoot string) error {
 		if closeErr != nil {
 			return closeErr
 		}
+		// 还原 zip 内记录的修改时间：清单哈希包含 ModifiedAt，
+		// 不还原会导致恢复后哈希守卫跨设备恒不匹配、每次启动重复恢复
+		if !file.Modified.IsZero() {
+			_ = os.Chtimes(targetPath, file.Modified, file.Modified)
+		}
 	}
 
 	return nil
 }
 
-func (bm *BackupManager) DeleteBackup(ctx context.Context, game Game, filename string, dataDir string, gateways map[string]*CloudflareGateway) error {
-	localPath := filepath.Join(dataDir, "backups", game.ID, filename)
+func (bm *BackupManager) DeleteBackup(ctx context.Context, game Game, backupID string, dataDir string, gateways map[string]*StorageGateway) error {
+	record, ok := backupRecordForID(backupID, game.BackupRegistry)
+	if !ok {
+		return nil
+	}
+	filename := record.Filename
+	matchingFilenames := 0
+	for _, candidate := range game.BackupRegistry {
+		if candidate.DeletedAt == nil && strings.TrimSpace(candidate.Filename) == filename {
+			matchingFilenames++
+		}
+	}
+	localPath := existingBackupLocalPath(dataDir, game.ID, record, matchingFilenames == 1)
 	_ = os.Remove(localPath)
 
-	remoteKey := fmt.Sprintf("backups/%s/%s", game.ID, filename)
-	routedAccountID := backupRouteForFilename(game, filename)
+	remoteKey := BackupObjectKeyForRecord(game.ID, record)
+	routedAccountID := strings.TrimSpace(record.AccountID)
 	if routedAccountID != "" {
 		gateway := gateways[routedAccountID]
-		if gateway == nil || gateway.R2 == nil {
+		if gateway == nil || gateway.Objects == nil {
 			return fmt.Errorf("backup %s is routed to account %s, but that storage is not available", filename, routedAccountID)
 		}
-		_, err := gateway.R2.client.DeleteObject(ctx, &s3.DeleteObjectInput{
-			Bucket: aws.String(gateway.R2.bucket),
-			Key:    aws.String(remoteKey),
-		})
-		return err
+		return gateway.Objects.DeleteObject(ctx, remoteKey)
 	}
 
 	var deleteErr error
 	for _, gateway := range gateways {
-		if gateway == nil || gateway.R2 == nil {
+		if gateway == nil || gateway.Objects == nil {
 			continue
 		}
-		_, err := gateway.R2.client.DeleteObject(ctx, &s3.DeleteObjectInput{
-			Bucket: aws.String(gateway.R2.bucket),
-			Key:    aws.String(remoteKey),
-		})
-		if err != nil && deleteErr == nil {
+		if err := gateway.Objects.DeleteObject(ctx, remoteKey); err != nil && deleteErr == nil {
 			deleteErr = err
 		}
 	}

@@ -82,16 +82,26 @@ func applyMainWindowIcon(iconData []byte) (func(), int, error) {
 		return nil, 0, fmt.Errorf("embedded app icon is empty")
 	}
 
-	bigIcon, err := loadTrayIcon("", iconData, 256, 256)
+	// 只解码一次源图（2.6MB PNG），再按系统度量的精确尺寸各自重采样。
+	// 大图标 = SM_CXICON（任务栏/Alt-Tab 取材），小图标 = SM_CXSMICON（标题栏/任务栏小图），
+	// 均随 DPI 缩放；给 Shell 精确尺寸可避免其低质量的二次缩放。
+	src, err := decodeTrayIcon("", iconData)
+	if err != nil {
+		return nil, 0, fmt.Errorf("decode window icon: %w", err)
+	}
+	bigW, bigH := systemMetric(smCxIcon, 32), systemMetric(smCyIcon, 32)
+	smallW, smallH := systemMetric(smCxSmIcon, 16), systemMetric(smCySmIcon, 16)
+
+	bigIcon, err := createHIconFromNRGBA(resizeToNRGBA(src, bigW, bigH))
 	if err != nil {
 		return nil, 0, fmt.Errorf("create big window icon: %w", err)
 	}
-	smallIcon, err := loadTrayIcon("", iconData, 32, 32)
+	smallIcon, err := createHIconFromNRGBA(resizeToNRGBA(src, smallW, smallH))
 	if err != nil {
 		destroyIconHandles(bigIcon)
 		return nil, 0, fmt.Errorf("create small window icon: %w", err)
 	}
-	small2Icon, err := loadTrayIcon("", iconData, 16, 16)
+	small2Icon, err := createHIconFromNRGBA(resizeToNRGBA(src, smallW, smallH))
 	if err != nil {
 		destroyIconHandles(bigIcon, smallIcon)
 		return nil, 0, fmt.Errorf("create small2 window icon: %w", err)

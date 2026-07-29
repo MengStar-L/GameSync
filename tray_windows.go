@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"image"
-	"image/color"
 	_ "image/jpeg"
 	_ "image/png"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"unsafe"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	xdraw "golang.org/x/image/draw"
 	"golang.org/x/sys/windows"
 )
 
@@ -221,7 +221,8 @@ func (t *windowsTray) run() {
 		return
 	}
 
-	icon, err := loadTrayIcon(t.iconPath, t.iconData, 32, 32)
+	// 按系统托盘的真实尺寸（DPI 感知）生成图标，避免 Shell 再次缩放造成模糊
+	icon, err := loadTrayIcon(t.iconPath, t.iconData, systemMetric(smCxSmIcon, 16), systemMetric(smCySmIcon, 16))
 	if err != nil {
 		t.ready <- err
 		return
@@ -454,42 +455,15 @@ func decodeTrayIcon(path string, data []byte) (image.Image, error) {
 	return src, nil
 }
 
+// resizeToNRGBA 用 Catmull-Rom 重采样缩放：滤波核随缩放比展开、覆盖全部源像素，
+// 大倍率缩小（1383px 源图 → 16px 托盘）不丢采样，图标边缘保持锐利。
+// 此前的单程双线性每目标像素只取 4 个源像素，43 倍缩小等于点采样，是图标模糊的根因。
 func resizeToNRGBA(src image.Image, width, height int) *image.NRGBA {
 	dst := image.NewNRGBA(image.Rect(0, 0, width, height))
-	srcBounds := src.Bounds()
-	srcW := srcBounds.Dx()
-	srcH := srcBounds.Dy()
-	if srcW == 0 || srcH == 0 {
+	if b := src.Bounds(); b.Dx() == 0 || b.Dy() == 0 {
 		return dst
 	}
-
-	scaleX := float64(srcW) / float64(width)
-	scaleY := float64(srcH) / float64(height)
-
-	for y := 0; y < height; y++ {
-		fy := (float64(y)+0.5)*scaleY - 0.5
-		y0 := clampInt(int(fy), 0, srcH-1)
-		y1 := clampInt(y0+1, 0, srcH-1)
-		wy := fy - float64(y0)
-
-		for x := 0; x < width; x++ {
-			fx := (float64(x)+0.5)*scaleX - 0.5
-			x0 := clampInt(int(fx), 0, srcW-1)
-			x1 := clampInt(x0+1, 0, srcW-1)
-			wx := fx - float64(x0)
-
-			c00 := colorToNRGBA(src.At(srcBounds.Min.X+x0, srcBounds.Min.Y+y0))
-			c10 := colorToNRGBA(src.At(srcBounds.Min.X+x1, srcBounds.Min.Y+y0))
-			c01 := colorToNRGBA(src.At(srcBounds.Min.X+x0, srcBounds.Min.Y+y1))
-			c11 := colorToNRGBA(src.At(srcBounds.Min.X+x1, srcBounds.Min.Y+y1))
-
-			i := dst.PixOffset(x, y)
-			dst.Pix[i+0] = bilinearChannel(c00.R, c10.R, c01.R, c11.R, wx, wy)
-			dst.Pix[i+1] = bilinearChannel(c00.G, c10.G, c01.G, c11.G, wx, wy)
-			dst.Pix[i+2] = bilinearChannel(c00.B, c10.B, c01.B, c11.B, wx, wy)
-			dst.Pix[i+3] = bilinearChannel(c00.A, c10.A, c01.A, c11.A, wx, wy)
-		}
-	}
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), xdraw.Over, nil)
 	return dst
 }
 
@@ -554,30 +528,22 @@ func createHIconFromNRGBA(img *image.NRGBA) (windows.Handle, error) {
 	return windows.Handle(icon), nil
 }
 
-func colorToNRGBA(c color.Color) color.NRGBA {
-	r, g, b, a := c.RGBA()
-	return color.NRGBA{
-		R: uint8(r >> 8),
-		G: uint8(g >> 8),
-		B: uint8(b >> 8),
-		A: uint8(a >> 8),
-	}
-}
+// 系统图标度量（随 DPI 缩放）：托盘/窗口小图标与大图标的精确像素尺寸
+const (
+	smCxIcon   = 11
+	smCyIcon   = 12
+	smCxSmIcon = 49
+	smCySmIcon = 50
+)
 
-func bilinearChannel(c00, c10, c01, c11 uint8, wx, wy float64) uint8 {
-	top := float64(c00)*(1-wx) + float64(c10)*wx
-	bottom := float64(c01)*(1-wx) + float64(c11)*wx
-	return uint8(top*(1-wy) + bottom*wy + 0.5)
-}
+var procGetSystemMetrics = user32.NewProc("GetSystemMetrics")
 
-func clampInt(value, min, max int) int {
-	if value < min {
-		return min
+func systemMetric(index, fallback int) int {
+	value, _, _ := procGetSystemMetrics.Call(uintptr(index))
+	if int(value) <= 0 {
+		return fallback
 	}
-	if value > max {
-		return max
-	}
-	return value
+	return int(value)
 }
 
 func loword(value uint32) uint32 {

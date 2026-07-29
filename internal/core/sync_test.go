@@ -32,6 +32,46 @@ func testSHA256(data []byte) string {
 	return hex.EncodeToString(hash[:])
 }
 
+func TestSyncGameWithPreparedManifestUnconfiguredDoesNotRequireGateway(t *testing.T) {
+	game := Game{ID: "game-1", Name: "Pathless", Sync: DefaultSyncConfig()}
+	summary, anchor, err := NewEngine().SyncGameWithPreparedManifest(
+		context.Background(), DeviceInfo{ID: "device-1"}, game, nil, "", SyncManifest{}, RemoteManifestRecord{}, nil,
+	)
+	if err != nil {
+		t.Fatalf("sync pathless game: %v", err)
+	}
+	if summary.Status != "unconfigured" {
+		t.Fatalf("status = %q, want unconfigured", summary.Status)
+	}
+	if anchor.LastRemoteVersion != 0 || len(anchor.LastManifest.Files) != 0 {
+		t.Fatalf("pathless sync changed anchor: %+v", anchor)
+	}
+}
+
+func TestStableUploadSnapshotRejectsChangedMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "save.dat")
+	if err := os.WriteFile(path, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := &ManifestFile{
+		Path:       "save.dat",
+		Size:       info.Size(),
+		ModifiedAt: info.ModTime().UTC(),
+		SHA256:     testSHA256([]byte("before")),
+	}
+	if err := os.WriteFile(path, []byte("changed-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot, err := stableUploadSnapshot(path, expected); !errors.Is(err, ErrLocalFileChanged) {
+		_ = os.Remove(snapshot)
+		t.Fatalf("stableUploadSnapshot error = %v, want ErrLocalFileChanged", err)
+	}
+}
+
 func TestRemoteCatalogGameStripsLocalSyncState(t *testing.T) {
 	now := time.Now()
 	game := Game{
@@ -73,8 +113,9 @@ func TestRemoteCatalogGameStripsLocalSyncState(t *testing.T) {
 	if publicGame.LastSync != nil {
 		t.Fatalf("remote catalog leaked last sync: %+v", publicGame.LastSync)
 	}
-	if !publicGame.RuntimeUpdatedAt.IsZero() {
-		t.Fatalf("remote catalog leaked runtime sync timestamp: %s", publicGame.RuntimeUpdatedAt)
+	// M4 修复后 RuntimeUpdatedAt 必须随 PlayTime 一起上云，不得清零
+	if !publicGame.RuntimeUpdatedAt.Equal(now) {
+		t.Fatalf("remote catalog dropped runtime timestamp: %s", publicGame.RuntimeUpdatedAt)
 	}
 }
 
@@ -157,6 +198,23 @@ func TestMergeRemoteCatalogKeepsLocalSyncAnchor(t *testing.T) {
 	}
 	if merged.LastSync == nil || merged.LastSync.Message != localSummary.Message {
 		t.Fatalf("remote catalog overwrote local last sync: %+v", merged.LastSync)
+	}
+}
+
+func TestMergeRemoteCatalogStripsIncomingLocalCoverPath(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = store.MergeRemoteCatalog(RemoteCatalog{Games: []Game{{
+		ID: "remote-game", Name: "Remote", CoverLocalPath: `C:\\OtherDevice\\cover.jpg`, CatalogUpdatedAt: time.Now(),
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	game := store.Snapshot().Games[0]
+	if game.CoverLocalPath != "" {
+		t.Fatalf("remote local cover path leaked into this device: %q", game.CoverLocalPath)
 	}
 }
 
@@ -347,7 +405,8 @@ func TestApplyDownloadsRollsBackOnDownloadFailure(t *testing.T) {
 		},
 	}
 
-	err := (&Engine{}).applyDownloads(context.Background(), downloader, game, []ManifestDiff{
+	// applyDownloads 现返回未提交的回滚句柄（A4/M8）：失败路径句柄为 nil 且已自行回滚
+	rollback, err := (&Engine{}).applyDownloads(context.Background(), downloader, game, []ManifestDiff{
 		{
 			Path:   "a.dat",
 			Action: "download",
@@ -379,6 +438,9 @@ func TestApplyDownloadsRollsBackOnDownloadFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected download failure")
 	}
+	if rollback != nil {
+		t.Fatal("expected nil rollback handle on failure")
+	}
 
 	if content, err := os.ReadFile(filepath.Join(root, "a.dat")); err != nil || string(content) != "old-a" {
 		t.Fatalf("a.dat was not restored: content=%q err=%v", string(content), err)
@@ -398,7 +460,7 @@ func TestApplyDownloadsRollsBackDeleteOnLaterFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := (&Engine{}).applyDownloads(context.Background(), nil, game, []ManifestDiff{
+	_, err := (&Engine{}).applyDownloads(context.Background(), nil, game, []ManifestDiff{
 		{Path: "delete.dat", Action: "delete_local"},
 		{Path: "../escape.dat", Action: "delete_local"},
 	})

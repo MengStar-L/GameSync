@@ -1,0 +1,325 @@
+/* ============================================================
+   views/welcome.css —— 首次启动欢迎页（前缀 .wel-）
+   居中舞台 + 三选卡；入场分层：logo → 标题 → 副文案 → 卡片 → 小字
+   ============================================================ */
+
+.wel-page {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-bottom: 30px;
+}
+
+/* ---------- 页面级大晕染（比其他页明显一点） ---------- */
+
+.wel-wash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(720px 540px at 22% 8%, var(--wash-peach) 0%, transparent 64%),
+    radial-gradient(820px 620px at 84% 24%, var(--wash-lilac) 0%, transparent 62%),
+    radial-gradient(700px 560px at 42% 104%, var(--wash-sage) 0%, transparent 66%);
+  opacity: 0.75;
+  animation: wel-wash-drift 60s var(--ease) infinite alternate;
+}
+
+@keyframes wel-wash-drift {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(20px, -16px, 0) scale(1.05);
+  }
+}
+
+/* ---------- 居中舞台 ---------- */
+
+.wel-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: auto;
+  padding: 44px 0 24px;
+  max-width: 920px;
+  text-align: center;
+}
+
+/* logo：chrome-mark 放大版 —— 墨底纸字 + 硬阴影 */
+.wel-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-lg);
+  background: var(--ink);
+  color: var(--paper);
+  box-shadow: var(--shadow-press-hover);
+  animation: wel-pop var(--t-slow) var(--ease-spring) 40ms backwards;
+}
+
+.wel-logo svg {
+  width: 38px;
+  height: 38px;
+}
+
+@keyframes wel-pop {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.72);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.wel-title {
+  margin-top: 30px;
+  font-size: 40px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  animation: page-in var(--t-slow) var(--ease) 150ms backwards;
+}
+
+/* 品牌词：Fraunces + 朱砂手写感下划线 */
+.wel-brand {
+  padding-bottom: 5px;
+  background: linear-gradient(var(--vermilion), var(--vermilion)) no-repeat left
+    calc(100% - 2px) / 100% 3px;
+}
+
+.wel-sub {
+  margin-top: 14px;
+  font-size: 15px;
+  color: var(--ink-2);
+  animation: page-in var(--t-slow) var(--ease) 240ms backwards;
+}
+
+/* ---------- 步骤切换（三选卡 ↔ 选择存储方式） ---------- */
+
+.wel-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+.wel-step.off {
+  display: none;
+}
+
+.wel-step-bar {
+  display: flex;
+  justify-content: flex-start;
+  width: 100%;
+  margin-top: 34px;
+  animation: page-in var(--t-slow) var(--ease) backwards;
+}
+
+.wel-back {
+  color: var(--ink-2);
+}
+
+.wel-back svg {
+  width: 15px;
+  height: 15px;
+}
+
+.wel-step-title {
+  margin-top: 4px;
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 600;
+  animation: page-in var(--t-slow) var(--ease) 60ms backwards;
+}
+
+.wel-step-sub {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--ink-2);
+  animation: page-in var(--t-slow) var(--ease) 120ms backwards;
+}
+
+/* ---------- 三张选择卡 ---------- */
+
+.wel-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  width: 100%;
+  margin-top: 48px;
+}
+
+/* 覆盖 .stagger 默认节拍：卡片在标题之后进场 */
+.wel-cards > :nth-child(1) {
+  animation-delay: 340ms;
+}
+
+.wel-cards > :nth-child(2) {
+  animation-delay: 420ms;
+}
+
+.wel-cards > :nth-child(3) {
+  animation-delay: 500ms;
+}
+
+/* 两张 provider 大卡：窄两列居中；子步骤入场节拍比首屏快 */
+.wel-cards-2 {
+  grid-template-columns: repeat(2, 1fr);
+  max-width: 660px;
+  margin-top: 30px;
+}
+
+.wel-cards.wel-cards-2 > :nth-child(1) {
+  animation-delay: 180ms;
+}
+
+.wel-cards.wel-cards-2 > :nth-child(2) {
+  animation-delay: 260ms;
+}
+
+.wel-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 26px 24px 20px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform var(--t-med) var(--ease),
+    box-shadow var(--t-med) var(--ease),
+    border-color var(--t-med) var(--ease);
+}
+
+/* 悬停浮起 + 朱砂描边（签名硬阴影拉长） */
+.wel-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--vermilion-line);
+  box-shadow: var(--shadow-press-hover);
+}
+
+.wel-card:active {
+  transform: translateY(-1px) scale(0.985);
+  box-shadow: var(--shadow-press-active);
+}
+
+/* 图标墨块 */
+.wel-card-glyph {
+  display: grid;
+  place-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: var(--radius);
+  background: var(--ink);
+  color: var(--ink-invert);
+  box-shadow: var(--shadow-press-active);
+  transition:
+    background-color var(--t-med) var(--ease),
+    transform var(--t-med) var(--ease-spring);
+}
+
+.wel-card-glyph svg {
+  width: 21px;
+  height: 21px;
+}
+
+.wel-card:hover .wel-card-glyph {
+  background: var(--vermilion);
+  transform: rotate(-6deg);
+}
+
+.wel-card-name {
+  margin-top: 18px;
+  font-family: var(--font-display);
+  font-size: 16.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.wel-card-desc {
+  flex: 1;
+  margin-top: 6px;
+  font-size: 12.8px;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+
+.wel-card-hint {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 18px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-3);
+  transition: color var(--t-fast) var(--ease);
+}
+
+.wel-card-arrow {
+  display: inline-flex;
+  transition: transform var(--t-med) var(--ease-spring);
+}
+
+.wel-card-arrow svg {
+  width: 13px;
+  height: 13px;
+}
+
+.wel-card:hover .wel-card-hint {
+  color: var(--vermilion);
+}
+
+.wel-card:hover .wel-card-arrow {
+  transform: translateX(3px);
+}
+
+/* busy：恢复进行中 —— 卡片不可点，图标旋转 */
+.wel-card.busy {
+  pointer-events: none;
+}
+
+.wel-card.busy .wel-card-glyph {
+  background: var(--vermilion);
+}
+
+.wel-card.busy .wel-card-glyph svg {
+  animation: wel-spin 0.9s linear infinite;
+}
+
+.wel-card.busy .wel-card-hint {
+  opacity: 0.45;
+}
+
+@keyframes wel-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- 底部隐私小字 ---------- */
+
+.wel-foot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: auto;
+  padding-top: 36px;
+  font-size: 12px;
+  color: var(--ink-3);
+  animation: page-in var(--t-slow) var(--ease) 640ms backwards;
+}
+
+.wel-foot-icon {
+  display: inline-flex;
+  color: var(--ink-3);
+}
+
+.wel-foot-icon svg {
+  width: 13px;
+  height: 13px;
+}

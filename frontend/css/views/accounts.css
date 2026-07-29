@@ -1,0 +1,568 @@
+/* ============================================================
+   views/accounts.css —— 云账号票券墙（前缀 .acc-）
+   签名视觉：撕票齿孔分隔线（radial-gradient 打孔 + 两侧半圆缺口）
+   ============================================================ */
+
+/* ---------- 页头 ---------- */
+
+.acc-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 26px;
+}
+
+.acc-title {
+  font-size: 30px;
+  font-weight: 600;
+}
+
+.acc-sub {
+  max-width: 560px;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+/* 页头动作区：当前方式徽章 + 切换/添加按钮并排 */
+.acc-head-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ---------- 票券网格 ---------- */
+
+.acc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+
+/* ---------- 票券卡 ---------- */
+
+.acc-card {
+  display: flex;
+  flex-direction: column;
+  transition:
+    transform var(--t-med) var(--ease),
+    box-shadow var(--t-med) var(--ease),
+    border-color var(--t-med) var(--ease),
+    opacity var(--t-med) var(--ease);
+}
+
+.acc-card.off {
+  opacity: 0.55;
+}
+
+.acc-card.off:hover {
+  opacity: 0.85;
+}
+
+.acc-card.verifying {
+  border-color: var(--indigo-ink);
+}
+
+/* 上半：票面 */
+.acc-top {
+  padding: 18px 20px 15px;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--card-warm);
+}
+
+.acc-name-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.acc-name {
+  min-width: 0;
+  font-size: 17px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.acc-badges {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.acc-card .badge svg {
+  width: 11px;
+  height: 11px;
+  flex: none;
+}
+
+.acc-badge-busy svg {
+  animation: acc-spin 0.9s linear infinite;
+}
+
+@keyframes acc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 票号：打码 Account ID */
+.acc-cid {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.acc-cid-k {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
+}
+
+.acc-cid-v {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  letter-spacing: 0.03em;
+  color: var(--ink-2);
+}
+
+/* ---------- 撕票齿孔分隔线（签名视觉） ---------- */
+
+.acc-perf {
+  position: relative;
+  flex: none;
+  height: 22px;
+  /* 一排冲出的圆孔：radial-gradient 打孔，露出纸底色 */
+  background:
+    radial-gradient(circle closest-side, var(--paper-2) 62%, transparent 74%)
+    center / 16px 7px repeat-x;
+}
+
+/* 两侧半圆缺口：像从票边剪进去的撕口 */
+.acc-perf::before,
+.acc-perf::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  background: var(--paper);
+  transform: translateY(-50%);
+}
+
+.acc-perf::before {
+  left: -10px;
+}
+
+.acc-perf::after {
+  right: -10px;
+}
+
+/* ---------- 下半：存根信息 ---------- */
+
+.acc-body {
+  flex: 1;
+  padding: 8px 20px 14px;
+}
+
+.acc-body .kv {
+  padding: 5px 0;
+  border-bottom: none;
+}
+
+/* 细进度条：按 10GB 免费额度 */
+.acc-meter {
+  height: 4px;
+  margin: 2px 0 8px;
+  border-radius: var(--radius-full);
+  background: var(--paper-2);
+  overflow: hidden;
+}
+
+.acc-meter i {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--indigo-ink);
+  transition: width var(--t-slow) var(--ease);
+}
+
+.acc-meter.warn i {
+  background: var(--ochre);
+}
+
+.acc-meter.danger i {
+  background: var(--crimson);
+}
+
+/* 横幅：usageWarning（琥珀）/ lastError（绯红） */
+.acc-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.acc-banner svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin-top: 2px;
+}
+
+.acc-banner.warn {
+  background: var(--ochre-soft);
+  color: var(--ochre);
+}
+
+.acc-banner.err {
+  background: var(--crimson-soft);
+  color: var(--crimson);
+}
+
+.acc-banner.info {
+  background: var(--indigo-soft);
+  color: var(--indigo-ink);
+}
+
+/* ---------- 卡脚 ---------- */
+
+.acc-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 20px 15px;
+  border-top: 1px solid var(--line-faint);
+}
+
+.acc-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.acc-toggle-text {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.acc-actions {
+  display: flex;
+  flex: none;
+  gap: 7px;
+}
+
+/* ---------- 抽屉表单 ---------- */
+
+/* 新建首个账号的 provider 分段选择：铺满抽屉宽度 */
+.acc-provider-field {
+  margin-bottom: 18px;
+}
+
+.acc-provider-seg {
+  display: flex;
+  width: 100%;
+}
+
+.acc-provider-seg .seg-item {
+  flex: 1;
+}
+
+/* 字段组按 provider 显隐：隐藏组保留已填内容 */
+.acc-fgroup-off {
+  display: none;
+}
+
+.acc-banner-form {
+  margin: 0 0 14px;
+}
+
+/* 角色只读提示（账号名与主副角色由后端自动分配） */
+.acc-form-role {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 12px 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--card-warm);
+}
+
+.acc-form-role svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--ink-2);
+}
+
+/* 编辑态的 provider 只读徽章靠右 */
+.acc-form-role .badge {
+  margin-left: auto;
+}
+
+.acc-form-role-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.acc-form-role-sub {
+  margin-top: 1px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.acc-req {
+  color: var(--vermilion);
+}
+
+.acc-mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+/* 密码框 + 眼睛切换 */
+.acc-secret {
+  position: relative;
+}
+
+.acc-secret .input {
+  padding-right: 40px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.acc-eye {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-3);
+  transform: translateY(-50%);
+  transition:
+    color var(--t-fast) var(--ease),
+    background-color var(--t-fast) var(--ease);
+}
+
+.acc-eye:hover {
+  background: var(--paper-2);
+  color: var(--ink);
+}
+
+.acc-eye svg {
+  width: 15px;
+  height: 15px;
+}
+
+.acc-form-check {
+  margin: 4px 0 22px;
+}
+
+.acc-form-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-faint);
+}
+
+/* ---------- 切换存储方式：目标选择 / 进度 ---------- */
+
+.acc-switch-target {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card-warm);
+}
+
+.acc-switch-provider {
+  margin-top: 2px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.acc-switch-select {
+  width: 100%;
+  margin: 6px 0 12px;
+}
+
+.acc-switch-new-fields {
+  margin-top: 4px;
+}
+
+.acc-switch-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.acc-switch-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--ink-3);
+  transition:
+    background-color var(--t-med) var(--ease),
+    color var(--t-med) var(--ease);
+}
+
+.acc-switch-step.active {
+  background: var(--indigo-soft);
+  color: var(--indigo-ink);
+}
+
+.acc-switch-step.done {
+  color: var(--sage);
+}
+
+.acc-switch-step.fail {
+  background: var(--crimson-soft);
+  color: var(--crimson);
+}
+
+.acc-switch-ico {
+  display: inline-flex;
+  flex: none;
+}
+
+.acc-switch-ico svg {
+  width: 15px;
+  height: 15px;
+}
+
+.acc-switch-step.active .acc-switch-ico svg {
+  animation: acc-spin 0.9s linear infinite;
+}
+
+.acc-switch-label {
+  flex: 1;
+}
+
+.acc-switch-count {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.acc-switch-msg {
+  min-height: 18px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+
+/* 失败说明横幅：默认隐藏，失败后加 .show 展示并保留 */
+.acc-switch-err {
+  display: none;
+}
+
+.acc-switch-err.show {
+  display: flex;
+}
+
+.acc-switch-note {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+@media (max-width: 760px) {
+  .acc-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .acc-head-actions {
+    flex-wrap: wrap;
+  }
+
+  .acc-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 520px) {
+  .acc-name-row {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .acc-badges {
+    justify-content: flex-start;
+  }
+
+  .acc-foot {
+    flex-wrap: wrap;
+  }
+
+  .acc-toggle-text {
+    white-space: nowrap;
+  }
+
+  .acc-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 390px) {
+  .acc-switch-target {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .acc-switch-step {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    min-height: 40px;
+  }
+
+  .acc-switch-label,
+  .acc-switch-msg,
+  .acc-switch-err,
+  .acc-switch-note {
+    overflow-wrap: anywhere;
+  }
+
+  .acc-switch-count {
+    min-width: 42px;
+    text-align: right;
+  }
+
+  .acc-form-foot {
+    flex-wrap: wrap;
+  }
+}

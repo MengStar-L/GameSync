@@ -1,0 +1,367 @@
+/* ============================================================
+   views/library.css —— 游戏库（前缀 .lib-）
+   精选 hero / 运行状态胶囊 / 筛选纸签行 / 封面墙 / 拖拽排序
+   ============================================================ */
+
+
+/* ---------- 运行状态胶囊（卡片） ---------- */
+
+.lib-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  max-width: 100%;
+  padding: 0 11px;
+  border-radius: var(--radius-full);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.lib-status::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+
+.lib-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lib-status.playing,
+.lib-status.syncing {
+  color: var(--indigo-ink);
+  background: var(--indigo-soft);
+}
+
+.lib-status.success {
+  color: var(--sage);
+  background: var(--sage-soft);
+}
+
+.lib-status.warn {
+  color: var(--ochre);
+  background: var(--ochre-soft);
+}
+
+/* syncing：状态点呼吸 */
+.lib-status.syncing::before {
+  animation: lib-breathe 1.3s var(--ease) infinite alternate;
+}
+
+@keyframes lib-breathe {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0.35;
+    transform: scale(0.7);
+  }
+}
+
+/* 盖在封面/模糊底上时换成实纸底，保证可读 */
+.lib-status.on-cover {
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-press-active);
+}
+
+.lib-status.sm {
+  height: 20px;
+  gap: 5px;
+  padding: 0 8px;
+  font-size: 10.5px;
+}
+
+.lib-status.sm::before {
+  width: 6px;
+  height: 6px;
+}
+
+/* ---------- 筛选纸签行 ---------- */
+
+.lib-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.lib-filters-gap {
+  flex: 1;
+}
+
+/* ---------- 节区标题 ---------- */
+
+.lib-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.lib-section-title {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 600;
+}
+
+.lib-section-count {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.lib-section-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.lib-section-hint svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* ---------- 封面墙 ---------- */
+
+.lib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 18px;
+}
+
+.lib-card {
+  overflow: hidden;
+  cursor: pointer;
+}
+
+/* 无路径游戏：半透明 */
+.lib-card.lib-unset {
+  opacity: 0.62;
+  transition:
+    opacity var(--t-med) var(--ease),
+    transform var(--t-med) var(--ease),
+    box-shadow var(--t-med) var(--ease),
+    border-color var(--t-med) var(--ease);
+}
+
+.lib-card.lib-unset:hover,
+.lib-card.lib-unset.menu-pin {
+  opacity: 0.9;
+}
+
+.lib-card-cover {
+  position: relative;
+  aspect-ratio: 3 / 4;
+}
+
+.lib-card-cover .cover {
+  position: absolute;
+  inset: 0;
+}
+
+.lib-card-cover .cover img {
+  transition:
+    opacity var(--t-slow) var(--ease),
+    transform var(--t-med) var(--ease);
+}
+
+.lib-card:hover .lib-card-cover .cover img,
+.lib-card.menu-pin .lib-card-cover .cover img {
+  transform: scale(1.05);
+}
+
+/* 悬停时封面轻压一层墨，衬托快速启动按钮 */
+.lib-card-cover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--ink) 16%, transparent);
+  opacity: 0;
+  transition: opacity var(--t-med) var(--ease);
+}
+
+.lib-card:hover .lib-card-cover::after,
+.lib-card.menu-pin .lib-card-cover::after {
+  opacity: 1;
+}
+
+/* 平台角标（右上） */
+.lib-card-platform {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: grid;
+  place-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--card) 90%, transparent);
+  color: var(--ink-2);
+}
+
+.lib-card-platform svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* 未配置徽记（左上，实纸底压过 badge.warn 的透明底） */
+.lib-card .lib-card-nopath {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  border: 1px solid var(--line);
+  background: var(--card);
+  box-shadow: var(--shadow-press-active);
+}
+
+/* 运行状态小胶囊（左下） */
+.lib-card-status {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 2;
+  max-width: calc(100% - 16px);
+}
+
+/* 快速启动圆钮：悬停浮现 */
+.lib-quick {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  z-index: 3;
+  display: grid;
+  place-content: center;
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--vermilion-deep);
+  border-radius: var(--radius-full);
+  background: var(--vermilion);
+  color: var(--card);
+  box-shadow: var(--shadow-press);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.7);
+  transition:
+    opacity var(--t-med) var(--ease),
+    transform var(--t-med) var(--ease-spring),
+    background-color var(--t-fast) var(--ease);
+}
+
+.lib-quick svg {
+  width: 20px;
+  height: 20px;
+}
+
+.lib-card:hover .lib-quick,
+.lib-card.menu-pin .lib-quick,
+.lib-quick.busy {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.lib-quick:hover {
+  background: var(--vermilion-deep);
+}
+
+.lib-quick:active {
+  transform: translate(-50%, -50%) scale(0.92);
+}
+
+.lib-quick.busy svg {
+  animation: lib-spin 0.9s linear infinite;
+}
+
+@keyframes lib-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 封面下方：标题 + 元信息 */
+.lib-card-body {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--line-faint);
+  background: var(--card);
+}
+
+.lib-card-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.lib-card-name-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.lib-card-sub {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 收藏小红心（hero 标题与卡片标题共用） */
+.lib-heart {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--crimson);
+  fill: var(--crimson);
+}
+
+
+/* ---------- 拖拽排序 ---------- */
+
+/* 源卡片降透明；实时换位后它本身就是目标占位 → 朱砂描边指示 */
+.lib-card.lib-dragging {
+  opacity: 0.35;
+  border-color: var(--vermilion);
+  outline: 2px dashed var(--vermilion);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+.lib-card.lib-dragging * {
+  pointer-events: none;
+}
+
+.lib-card.lib-dragging .lib-quick {
+  opacity: 0;
+}
+
+/* ---------- 空状态 ---------- */
+
+.lib-empty-main {
+  min-height: 62vh;
+}
+
+/* ---------- 增量渲染：新卡片单独入场（不重播整格动画） ---------- */
+
+.lib-card-enter {
+  animation: page-in var(--t-med) var(--ease) backwards;
+}

@@ -1,0 +1,143 @@
+/* ============================================================
+   views/tags.css —— 标签纸片墙（前缀 .tags-）
+   ============================================================ */
+
+.tags-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 26px;
+}
+
+.tags-title {
+  font-size: 30px;
+  font-weight: 600;
+}
+
+.tags-sub {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.tags-count {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.tags-count svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tags-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 16px;
+}
+
+.tags-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  cursor: pointer;
+}
+
+.tags-card.pinned {
+  border-color: var(--vermilion-line);
+}
+
+.tags-card-glyph {
+  display: grid;
+  place-content: center;
+  width: 42px;
+  height: 42px;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--paper-2);
+  color: var(--ink-2);
+  transition:
+    background-color var(--t-med) var(--ease),
+    color var(--t-med) var(--ease),
+    transform var(--t-med) var(--ease-spring);
+}
+
+.tags-card-glyph svg {
+  width: 18px;
+  height: 18px;
+}
+
+.tags-card:hover .tags-card-glyph,
+.tags-card.menu-pin .tags-card-glyph {
+  background: var(--vermilion);
+  color: #fff;
+  transform: rotate(-8deg);
+}
+
+.tags-card-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.tags-card-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tags-pin-mark {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--vermilion);
+}
+
+.tags-card-meta {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.tags-card-num {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 500;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 拖拽排序 ---------- */
+
+.tags-card {
+  cursor: pointer;
+}
+
+.tags-card.tags-dragging {
+  opacity: 0.35;
+  border-color: var(--vermilion);
+  outline: 2px dashed var(--vermilion);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+.tags-card.tags-dragging * {
+  pointer-events: none;
+}
+
+/* ---------- 增量渲染：新卡片单独入场（不重播整格动画） ---------- */
+
+.tags-card-enter {
+  animation: page-in var(--t-med) var(--ease) backwards;
+}

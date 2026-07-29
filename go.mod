@@ -1,6 +1,6 @@
 module gamesync
 
-go 1.22.0
+go 1.25.0
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3
@@ -8,9 +8,11 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.61
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.78.0
 	github.com/aws/smithy-go v1.22.2
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/wailsapp/wails/v2 v2.12.0
 	golang.org/x/crypto v0.33.0
+	golang.org/x/image v0.44.0
 	golang.org/x/sys v0.30.0
 )
 
@@ -59,5 +61,5 @@ require (
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	golang.org/x/net v0.35.0 // indirect
-	golang.org/x/text v0.22.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 )

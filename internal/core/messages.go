@@ -54,6 +54,10 @@ const (
 	msgSyncProgressSaveRemoteManifest = "正在写入新的 D1 版本索引..."
 	msgSyncCompleted                  = "同步完成（上传 %d 个，下载 %d 个）"
 	msgManifestRootEmpty              = "存档目录为空"
+	msgWebdavConfigIncomplete         = "WebDAV 账号需填写服务器地址、用户名与密码"
+	msgWebdavURLInvalid               = "WebDAV 服务器地址无效，请填写 http(s) 地址"
+	msgWebdavAuthFailed               = "认证失败，请检查用户名与应用密码"
+	msgWebdavCatalogConflict          = "云端目录并发冲突，多次重试仍失败，请稍后再试"
 	msgManifestReadRootFailed         = "读取存档目录失败: %w"
 	msgManifestRootNotDir             = "存档路径不是目录"
 )

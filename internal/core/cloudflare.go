@@ -58,9 +58,20 @@ type d1APIError struct {
 	Message string `json:"message"`
 }
 
+type d1QueryMeta struct {
+	Changes     int64 `json:"changes"`
+	RowsWritten int64 `json:"rows_written"`
+}
+
+// wroteRows 判断本次语句是否真正写入了行：优先看 changes，兼容只报 rows_written 的返回
+func (m d1QueryMeta) wroteRows() bool {
+	return m.Changes > 0 || m.RowsWritten > 0
+}
+
 type d1StatementResult struct {
 	Success bool             `json:"success"`
 	Results []map[string]any `json:"results"`
+	Meta    d1QueryMeta      `json:"meta"`
 }
 
 type d1QueryEnvelope struct {
@@ -88,11 +99,6 @@ type R2Client struct {
 	usageCacheKey string
 }
 
-type CloudflareGateway struct {
-	D1 *D1Client
-	R2 *R2Client
-}
-
 type EncryptedCredentialBlob struct {
 	Version    int    `json:"version"`
 	KDF        string `json:"kdf"`
@@ -101,7 +107,7 @@ type EncryptedCredentialBlob struct {
 	Ciphertext string `json:"ciphertext"`
 }
 
-func NewCloudflareGateway(ctx context.Context, account CloudflareAccount) (*CloudflareGateway, error) {
+func NewCloudflareGateway(ctx context.Context, account CloudflareAccount) (*StorageGateway, error) {
 	if strings.TrimSpace(account.AccountID) == "" || strings.TrimSpace(account.APIToken) == "" || strings.TrimSpace(account.D1DatabaseID) == "" {
 		return nil, errors.New(msgD1ConfigIncomplete)
 	}
@@ -114,13 +120,13 @@ func NewCloudflareGateway(ctx context.Context, account CloudflareAccount) (*Clou
 		return nil, err
 	}
 
-	return &CloudflareGateway{
-		D1: NewD1Client(account),
-		R2: r2,
+	return &StorageGateway{
+		Catalog: NewD1Client(account),
+		Objects: r2,
 	}, nil
 }
 
-func NewSplitCloudflareGateway(ctx context.Context, metadataAccount CloudflareAccount, storageAccount CloudflareAccount) (*CloudflareGateway, error) {
+func NewSplitCloudflareGateway(ctx context.Context, metadataAccount CloudflareAccount, storageAccount CloudflareAccount) (*StorageGateway, error) {
 	if strings.TrimSpace(metadataAccount.AccountID) == "" || strings.TrimSpace(metadataAccount.APIToken) == "" || strings.TrimSpace(metadataAccount.D1DatabaseID) == "" {
 		return nil, errors.New(msgPrimaryD1ConfigIncomplete)
 	}
@@ -133,9 +139,9 @@ func NewSplitCloudflareGateway(ctx context.Context, metadataAccount CloudflareAc
 		return nil, err
 	}
 
-	return &CloudflareGateway{
-		D1: NewD1Client(metadataAccount),
-		R2: r2,
+	return &StorageGateway{
+		Catalog: NewD1Client(metadataAccount),
+		Objects: r2,
 	}, nil
 }
 
@@ -262,7 +268,10 @@ func (c *D1Client) SaveRemoteCatalog(ctx context.Context, catalog RemoteCatalog,
 			game.ID, string(gameJSON), game.StorageAccountID, index, orderUpdatedAtText, updatedAtText); err != nil {
 			return 0, err
 		}
-		_, _ = c.Query(ctx, `DELETE FROM catalog_tombstones WHERE entity_type = 'game' AND entity_id = ? AND deleted_at <= ?;`, game.ID, updatedAtText)
+		// 墓碑解除只看“编辑时间”（不含 Runtime，M6）：纯 playtime 写入抬高的
+		// CatalogUpdatedAt 不得清掉他机的删除墓碑
+		editUpdatedAtText := catalogTimestamp(GameEditTimestamp(game)).Format(time.RFC3339Nano)
+		_, _ = c.Query(ctx, `DELETE FROM catalog_tombstones WHERE entity_type = 'game' AND entity_id = ? AND deleted_at <= ?;`, game.ID, editUpdatedAtText)
 	}
 
 	for _, account := range catalog.Accounts {
@@ -369,7 +378,8 @@ func remoteCatalogGame(game Game, updatedAt time.Time) Game {
 	}
 	publicGame.Anchor = SyncAnchor{}
 	publicGame.LastSync = nil
-	publicGame.RuntimeUpdatedAt = time.Time{}
+	// RuntimeUpdatedAt 必须随 PlayTime/LastPlayed 一起上云（M4）：
+	// 清零会让拉取侧把零值回填成 CatalogUpdatedAt，陈旧时长伪装成新鲜数据
 	return publicGame
 }
 
@@ -379,6 +389,8 @@ func remoteCatalogAccount(account CloudflareAccount, updatedAt time.Time) Cloudf
 	publicAccount.APIToken = ""
 	publicAccount.R2AccessKeyID = ""
 	publicAccount.R2SecretAccessKey = ""
+	// WebdavPassword 与 apiToken/r2Secret 同等对待：明文不进入远端目录
+	publicAccount.WebdavPassword = ""
 	return publicAccount
 }
 
@@ -439,6 +451,64 @@ func (c *D1Client) IncrementCatalogRevision(ctx context.Context) (int64, error) 
 		return 0, err
 	}
 	return c.LoadCatalogRevision(ctx)
+}
+
+func (c *D1Client) LoadStorageHandoff(ctx context.Context) (StorageHandoff, error) {
+	if err := c.EnsureSchema(ctx); err != nil {
+		return StorageHandoff{}, err
+	}
+	rows, err := c.Query(ctx, `SELECT int_value, text_value FROM catalog_meta WHERE key = 'storage_handoff' LIMIT 1;`)
+	if err != nil {
+		return StorageHandoff{}, err
+	}
+	if len(rows) == 0 || strings.TrimSpace(fmt.Sprint(rows[0]["text_value"])) == "" {
+		return StorageHandoff{}, nil
+	}
+	var handoff StorageHandoff
+	if err := json.Unmarshal([]byte(fmt.Sprint(rows[0]["text_value"])), &handoff); err != nil {
+		return StorageHandoff{}, fmt.Errorf("decode storage handoff: %w", err)
+	}
+	if handoff.Generation == 0 {
+		handoff.Generation = asInt64(rows[0]["int_value"])
+	}
+	return handoff, nil
+}
+
+func (c *D1Client) SaveStorageHandoffIfGeneration(ctx context.Context, handoff StorageHandoff, expectedGeneration int64) error {
+	if err := c.EnsureSchema(ctx); err != nil {
+		return err
+	}
+	if err := validateStorageHandoffUpdate(handoff, expectedGeneration); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(handoff)
+	if err != nil {
+		return fmt.Errorf("encode storage handoff: %w", err)
+	}
+	now := time.Now().Format(time.RFC3339Nano)
+	var meta d1QueryMeta
+	if expectedGeneration == 0 {
+		_, meta, err = c.queryWithMeta(ctx, `INSERT INTO catalog_meta (key, int_value, text_value, updated_at)
+			SELECT 'storage_handoff', ?, ?, ?
+			WHERE NOT EXISTS (SELECT 1 FROM catalog_meta WHERE key = 'storage_handoff');`, handoff.Generation, string(payload), now)
+	} else if handoff.Generation == expectedGeneration {
+		_, meta, err = c.queryWithMeta(ctx, `UPDATE catalog_meta
+			SET text_value = ?, updated_at = ?
+			WHERE key = 'storage_handoff' AND int_value = ? AND json_extract(text_value, '$.transactionId') = ?;`,
+			string(payload), now, expectedGeneration, handoff.TransactionID)
+	} else {
+		_, meta, err = c.queryWithMeta(ctx, `UPDATE catalog_meta
+			SET int_value = ?, text_value = ?, updated_at = ?
+			WHERE key = 'storage_handoff' AND int_value = ?;`,
+			handoff.Generation, string(payload), now, expectedGeneration)
+	}
+	if err != nil {
+		return err
+	}
+	if !meta.wroteRows() {
+		return ErrStorageHandoffChanged
+	}
+	return nil
 }
 
 func (c *D1Client) LoadRemoteCatalog(ctx context.Context) (RemoteCatalog, map[string]EncryptedCredentialBlob, error) {
@@ -524,6 +594,12 @@ func (c *D1Client) LoadRemoteCatalog(ctx context.Context) (RemoteCatalog, map[st
 		}
 	}
 
+	if handoff, handoffErr := c.LoadStorageHandoff(ctx); handoffErr != nil {
+		return RemoteCatalog{}, nil, handoffErr
+	} else if handoff.TransactionID != "" {
+		catalog.Handoff = &handoff
+		catalog.StorageGeneration = handoff.Generation
+	}
 	return catalog, encrypted, nil
 }
 
@@ -664,8 +740,10 @@ func (c *D1Client) SaveRemoteManifestIfVersion(ctx context.Context, record Remot
 		return fmt.Errorf("encode manifest: %w", err)
 	}
 	updatedAt := record.UpdatedAt.Format(time.RFC3339Nano)
+	var meta d1QueryMeta
 	if expectedVersion == 0 {
-		if _, err := c.Query(ctx,
+		var err error
+		_, meta, err = c.queryWithMeta(ctx,
 			`INSERT INTO sync_manifests (game_id, version, manifest_json, total_bytes, updated_at, updated_by_device)
 			 SELECT ?, ?, ?, ?, ?, ?
 			 WHERE NOT EXISTS (SELECT 1 FROM sync_manifests WHERE game_id = ?);`,
@@ -676,11 +754,13 @@ func (c *D1Client) SaveRemoteManifestIfVersion(ctx context.Context, record Remot
 			updatedAt,
 			record.UpdatedByDevice,
 			record.GameID,
-		); err != nil {
+		)
+		if err != nil {
 			return err
 		}
 	} else {
-		if _, err := c.Query(ctx,
+		var err error
+		_, meta, err = c.queryWithMeta(ctx,
 			`UPDATE sync_manifests
 			 SET version = ?, manifest_json = ?, total_bytes = ?, updated_at = ?, updated_by_device = ?
 			 WHERE game_id = ? AND version = ?;`,
@@ -691,11 +771,19 @@ func (c *D1Client) SaveRemoteManifestIfVersion(ctx context.Context, record Remot
 			record.UpdatedByDevice,
 			record.GameID,
 			expectedVersion,
-		); err != nil {
+		)
+		if err != nil {
 			return err
 		}
 	}
 
+	// changes>=1 表示带版本守卫的写入确实命中，直接视为提交成功；
+	// 不再依赖写后读比较（并发窗口下会把自己已生效的提交误判为冲突）
+	if meta.wroteRows() {
+		return c.saveRemoteRevision(ctx, record, string(manifestJSON))
+	}
+
+	// meta 未报告写入（守卫未命中或旧网关未返回 meta）时，写后读校验仅作兜底
 	current, err := c.LoadRemoteManifest(ctx, record.GameID)
 	if err != nil {
 		return err
@@ -722,12 +810,19 @@ func (c *D1Client) saveRemoteRevision(ctx context.Context, record RemoteManifest
 }
 
 func (c *D1Client) Query(ctx context.Context, sql string, args ...any) ([]map[string]any, error) {
+	rows, _, err := c.queryWithMeta(ctx, sql, args...)
+	return rows, err
+}
+
+// queryWithMeta 与 Query 相同，但额外返回 D1 语句执行的 meta（changes/rows_written），
+// 供 CAS 写入方直接判定 UPDATE 是否命中，替代不可靠的写后读比较
+func (c *D1Client) queryWithMeta(ctx context.Context, sql string, args ...any) ([]map[string]any, d1QueryMeta, error) {
 	payload, err := json.Marshal(d1QueryRequest{
 		SQL:    sql,
 		Params: args,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("marshal d1 request: %w", err)
+		return nil, d1QueryMeta{}, fmt.Errorf("marshal d1 request: %w", err)
 	}
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("GAMESYNC_DEBUG_D1")), "1") ||
 		strings.EqualFold(strings.TrimSpace(os.Getenv("GAMESYNC_DEBUG_D1")), "true") {
@@ -737,7 +832,7 @@ func (c *D1Client) Query(ctx context.Context, sql string, args ...any) ([]map[st
 	endpoint := fmt.Sprintf("%s/accounts/%s/d1/database/%s/query", d1BaseURL, c.accountID, c.databaseID)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return nil, fmt.Errorf("build d1 request: %w", err)
+		return nil, d1QueryMeta{}, fmt.Errorf("build d1 request: %w", err)
 	}
 
 	request.Header.Set("Authorization", "Bearer "+c.apiToken)
@@ -745,21 +840,21 @@ func (c *D1Client) Query(ctx context.Context, sql string, args ...any) ([]map[st
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("call d1 query: %w", err)
+		return nil, d1QueryMeta{}, fmt.Errorf("call d1 query: %w", err)
 	}
 	defer response.Body.Close()
 
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read d1 response: %w", err)
+		return nil, d1QueryMeta{}, fmt.Errorf("read d1 response: %w", err)
 	}
 	if response.StatusCode >= 300 {
-		return nil, fmt.Errorf("d1 query failed: %s", strings.TrimSpace(string(body)))
+		return nil, d1QueryMeta{}, fmt.Errorf("d1 query failed: %s", strings.TrimSpace(string(body)))
 	}
 
 	var envelope d1QueryEnvelope
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("decode d1 response: %w", err)
+		return nil, d1QueryMeta{}, fmt.Errorf("decode d1 response: %w", err)
 	}
 	if !envelope.Success {
 		messages := make([]string, 0, len(envelope.Errors))
@@ -769,13 +864,13 @@ func (c *D1Client) Query(ctx context.Context, sql string, args ...any) ([]map[st
 		if len(messages) == 0 {
 			messages = append(messages, "unknown d1 error")
 		}
-		return nil, errors.New(strings.Join(messages, "; "))
+		return nil, d1QueryMeta{}, errors.New(strings.Join(messages, "; "))
 	}
 
 	if len(envelope.Result) > 0 {
-		return envelope.Result[0].Results, nil
+		return envelope.Result[0].Results, envelope.Result[0].Meta, nil
 	}
-	return nil, nil
+	return nil, d1QueryMeta{}, nil
 }
 
 func (c *D1Client) ClearGameRecords(ctx context.Context, gameID string) error {
@@ -826,14 +921,6 @@ func NewR2Client(ctx context.Context, account CloudflareAccount) (*R2Client, err
 }
 
 func (c *R2Client) PutObjectFromFile(ctx context.Context, key string, filePath string) error {
-	exists, err := c.objectExists(ctx, key)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return nil
-	}
-
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("open file for upload: %w", err)
@@ -1135,6 +1222,29 @@ func (c *R2Client) listAccessibleBuckets(ctx context.Context) ([]string, error) 
 		return nil, errors.New(msgNoUsableR2Buckets)
 	}
 	return names, nil
+}
+
+// ListObjects 实现 ObjectLister：按前缀列举对象（云端备份列表/自动备份清理使用）
+func (c *R2Client) ListObjects(ctx context.Context, prefix string) ([]RemoteObjectInfo, error) {
+	paginator := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(c.bucket),
+		Prefix: aws.String(prefix),
+	})
+	var objects []RemoteObjectInfo
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, object := range page.Contents {
+			objects = append(objects, RemoteObjectInfo{
+				Key:          aws.ToString(object.Key),
+				Size:         aws.ToInt64(object.Size),
+				LastModified: aws.ToTime(object.LastModified),
+			})
+		}
+	}
+	return objects, nil
 }
 
 func (c *R2Client) bucketUsageBytes(ctx context.Context, bucket string) (int64, error) {

@@ -24,6 +24,7 @@ type accountCredentials struct {
 	APIToken          string `json:"apiToken"`
 	R2AccessKeyID     string `json:"r2AccessKeyId"`
 	R2SecretAccessKey string `json:"r2SecretAccessKey"`
+	WebdavPassword    string `json:"webdavPassword,omitempty"`
 }
 
 func EncryptAccountCredentials(account CloudflareAccount, password string) (EncryptedCredentialBlob, error) {
@@ -54,6 +55,7 @@ func EncryptAccountCredentials(account CloudflareAccount, password string) (Encr
 		APIToken:          account.APIToken,
 		R2AccessKeyID:     account.R2AccessKeyID,
 		R2SecretAccessKey: account.R2SecretAccessKey,
+		WebdavPassword:    account.WebdavPassword,
 	})
 	if err != nil {
 		return EncryptedCredentialBlob{}, err
@@ -110,6 +112,10 @@ func DecryptAccountCredentials(account CloudflareAccount, blob EncryptedCredenti
 	account.APIToken = credentials.APIToken
 	account.R2AccessKeyID = credentials.R2AccessKeyID
 	account.R2SecretAccessKey = credentials.R2SecretAccessKey
+	// 旧备份包无 webdavPassword 字段时保留账号原值，避免解密把已有密码清空
+	if credentials.WebdavPassword != "" {
+		account.WebdavPassword = credentials.WebdavPassword
+	}
 	return account, nil
 }
 

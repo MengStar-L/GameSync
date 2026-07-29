@@ -20,7 +20,10 @@ func NewProcessMonitor() *ProcessMonitor {
 
 // LaunchAndMonitor 尝试启动并追踪游戏。
 // 针对 Steam 游戏等启动器，直接运行的 exe 会立即退出，这里采用循环侦听其所处目录的后代进程。
-func (pm *ProcessMonitor) LaunchAndMonitor(ctx context.Context, installPath string, onStart func(int32), onEnd func(time.Duration)) error {
+// 回调约定：仅“曾识别到游戏进程且该进程已退出”才调用 onEnd（真实会话结束）；
+// 60 秒内始终未识别到进程调用 onMiss（不得视为会话结束，否则会用开局前旧档伪造自动备份）；
+// ctx 取消（应用退出）两个回调都不触发。
+func (pm *ProcessMonitor) LaunchAndMonitor(ctx context.Context, installPath string, onStart func(int32), onEnd func(time.Duration), onMiss func()) error {
 	if strings.TrimSpace(installPath) == "" {
 		return fmt.Errorf(msgInvalidLaunchPath)
 	}
@@ -41,13 +44,6 @@ func (pm *ProcessMonitor) LaunchAndMonitor(ctx context.Context, installPath stri
 	gameDir = strings.ToLower(filepath.Clean(gameDir))
 
 	go func() {
-		defer func() {
-			duration := time.Since(startTime)
-			if onEnd != nil {
-				onEnd(duration)
-			}
-		}()
-
 		var trackedPid int32 = 0
 
 		// 阶段一：侦听寻找游戏进程（最长等待 60 秒）
@@ -59,9 +55,14 @@ func (pm *ProcessMonitor) LaunchAndMonitor(ctx context.Context, installPath stri
 		for {
 			select {
 			case <-ctx.Done():
-				return
+				return // 应用退出：不产生任何会话回调
 			case <-timeout:
-				return // 超时未找到进程，视为单次速刷（直接进入 end 回调）
+				// 超时未识别到进程（启动器桩/steam:// 等场景游戏可能仍在运行），
+				// 不得当作会话结束，交由 onMiss 上报
+				if onMiss != nil {
+					onMiss()
+				}
+				return
 			case <-ticker.C:
 				pids, err := process.Pids()
 				if err != nil {
@@ -97,11 +98,14 @@ func (pm *ProcessMonitor) LaunchAndMonitor(ctx context.Context, installPath stri
 		for {
 			select {
 			case <-ctx.Done():
-				return
+				return // 应用退出：游戏可能仍在运行，不按会话结束处理
 			case <-monitorTicker.C:
 				exists, err := process.PidExists(trackedPid)
 				if err != nil || !exists {
-					// 进程已退出
+					// 进程已退出：真实会话结束
+					if onEnd != nil {
+						onEnd(time.Since(startTime))
+					}
 					return
 				}
 			}

@@ -7,7 +7,8 @@ export default defineConfig({
   },
   server: {
     host: '127.0.0.1',
-    port: 34116,
-    strictPort: true,
+    // PORT 由预览工具注入；未注入时保持 wails dev 期望的固定端口
+    port: Number(process.env.PORT) || 34116,
+    strictPort: !process.env.PORT,
   },
 });

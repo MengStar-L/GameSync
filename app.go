@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,8 +55,19 @@ type App struct {
 	backupDeleteMu    sync.Mutex
 	backupDeleteQueue chan queuedBackupDelete
 	backupDeleteSet   map[string]queuedBackupDelete
+	syncCoordinatorMu sync.Mutex
+	syncInfraMu       sync.Mutex
+	deviceIndex       *core.DeviceIndexStore
+	saveChangeTracker *core.SaveChangeTracker
 	syncGameMu        sync.Mutex
 	syncGameLocks     map[string]*sync.Mutex
+	switchStorageMu   sync.Mutex
+	switchStorageBusy bool
+	remoteOpsMu       sync.RWMutex
+	handoffMu         sync.Mutex
+	catalogStoreFn    func(core.CloudflareAccount) (core.CatalogStore, error)
+	objectStoreFn     func(context.Context, core.CloudflareAccount) (core.ObjectStore, error)
+	verifyStorageFn   func(context.Context, core.CloudflareAccount) (core.CloudflareAccount, error)
 }
 
 type queuedGameDelete struct {
@@ -64,21 +77,21 @@ type queuedGameDelete struct {
 
 type queuedBackupDelete struct {
 	GameID   string
-	Filename string
+	BackupID string
 }
 
 type queuedBackupUpload struct {
 	GameID    string
-	Filename  string
+	BackupID  string
 	AccountID string
 }
 
-func queuedBackupUploadKey(gameID string, filename string) string {
-	return strings.TrimSpace(gameID) + "::" + strings.TrimSpace(filename)
+func queuedBackupUploadKey(gameID string, backupID string) string {
+	return strings.TrimSpace(gameID) + "::" + strings.TrimSpace(backupID)
 }
 
-func queuedBackupDeleteKey(gameID string, filename string) string {
-	return strings.TrimSpace(gameID) + "::" + strings.TrimSpace(filename)
+func queuedBackupDeleteKey(gameID string, backupID string) string {
+	return strings.TrimSpace(gameID) + "::" + strings.TrimSpace(backupID)
 }
 
 const (
@@ -114,6 +127,8 @@ const (
 	msgCoverLocalOnlyPrimaryUnavailable = "封面已保存到本地，但主账号不可用，暂时无法上传云端"
 	msgCoverLocalOnlyGatewayInitFailed  = "封面已保存到本地，但云端网关初始化失败: %v"
 	msgCoverLocalOnlyUploadFailed       = "封面已保存到本地，但上传云端失败: %v"
+	msgCoverSyncFailed                  = "存档已同步，但封面同步失败: %v"
+	msgCoverSyncing                     = "正在同步游戏封面..."
 	msgNoUsableCloudflareAccount        = "当前没有可用的 Cloudflare 账号"
 	msgParseCoverReferenceFailed        = "解析封面引用失败: %w"
 	msgUnsupportedCoverReference        = "不支持的封面引用: %s"
@@ -141,6 +156,17 @@ const (
 	labelJSONBackupFile                 = "JSON 备份文件"
 	msgWriteBackupFileFailed            = "写入备份文件失败: %w"
 	msgReadBackupFileFailed             = "读取备份文件失败: %w"
+	msgStorageSwitchBusy                = "存储切换正在进行中，请稍候"
+	msgStorageSwitchTargetRequired      = "请选择一个已有连接或填写一个新连接"
+	msgStorageSwitchSameProvider        = "目标连接必须使用另一种存储方式"
+	msgStorageSwitchVerifying           = "正在验证新存储账号的连通性与可写性..."
+	msgStorageSwitchVerifyFailed        = "新存储账号验证失败: %s"
+	msgStorageSwitchAccount             = "正在切换主账号并重置游戏同步锚点..."
+	msgStorageSwitchCatalog             = "正在初始化新云端并上传目录..."
+	msgStorageSwitchCatalogFailed       = "本地已切换为新存储账号，但目录上传失败: %v；可稍后在游戏库手动同步补传"
+	msgStorageSwitchUploading           = "正在同步「%s」的存档 (%d/%d)..."
+	msgStorageSwitchDone                = "存储切换完成"
+	msgStorageSwitchDoneWithFailures    = "存储切换完成，但以下游戏未完成首次同步：%s；可稍后在游戏库继续同步"
 )
 
 func NewApp() *App {
@@ -153,18 +179,24 @@ func NewApp() *App {
 		backupDeleteQueue: make(chan queuedBackupDelete, 32),
 		backupDeleteSet:   make(map[string]queuedBackupDelete),
 		syncGameLocks:     make(map[string]*sync.Mutex),
+		catalogStoreFn:    newCatalogStore,
+		objectStoreFn:     newObjectStore,
+		verifyStorageFn:   verifyStorageAccount,
 	}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.startDeleteWorker()
-	a.startBackupUploadWorker()
-	a.startBackupDeleteWorker()
 	if err := a.ensureReady(); err != nil {
 		wailsruntime.LogErrorf(ctx, "startup failed: %v", err)
 		return
 	}
+	if err := a.startSyncTracking(); err != nil {
+		wailsruntime.LogErrorf(ctx, "start save change tracking failed: %v", err)
+	}
+	a.startDeleteWorker()
+	a.startBackupUploadWorker()
+	a.startBackupDeleteWorker()
 	if err := a.restoreWindowState(); err != nil {
 		wailsruntime.LogErrorf(ctx, "restore window state failed: %v", err)
 	}
@@ -174,7 +206,63 @@ func (a *App) startup(ctx context.Context) {
 	if a.store != nil && a.store.HasPendingCatalogSync() {
 		a.queueRemoteCatalogSync("startup pending")
 	}
+	// 上传/删除队列为纯内存队列，重启后从注册表重入未完成任务（M9）
+	go a.requeuePendingBackupOperations()
 	go a.verifyAccounts(false)
+}
+
+// requeuePendingBackupOperations 启动时扫描全部游戏的 BackupRegistry：
+// pending_upload 重新入上传队列；pending_delete 与 DeleteRetryAt 已到期的
+// delete_failed 重新入删除队列。
+func (a *App) requeuePendingBackupOperations() {
+	if a.store == nil {
+		return
+	}
+	now := time.Now()
+	type uploadTask struct{ gameID, backupID, accountID string }
+	type deleteTask struct{ gameID, backupID string }
+	uploads := make([]uploadTask, 0)
+	deletes := make([]deleteTask, 0)
+	for _, game := range a.store.Snapshot().Games {
+		gameCopy := game
+		changed := false
+		for _, rawRecord := range gameCopy.BackupRegistry {
+			record := normalizeBackupRecord(rawRecord)
+			if record.DeletedAt != nil || record.Filename == "" {
+				continue
+			}
+			switch record.Status {
+			case core.BackupStatusPendingUpload:
+				if record.AccountID != "" {
+					uploads = append(uploads, uploadTask{gameCopy.ID, core.BackupRecordID(record), record.AccountID})
+				}
+			case core.BackupStatusPendingDelete:
+				deletes = append(deletes, deleteTask{gameCopy.ID, core.BackupRecordID(record)})
+			case core.BackupStatusDeleteFailed:
+				if record.DeleteRetryAt != nil && !record.DeleteRetryAt.After(now) {
+					record.Status = core.BackupStatusPendingDelete
+					record.PendingDelete = true
+					record.DeleteRetryAt = nil
+					upsertBackupRecord(&gameCopy, record)
+					changed = true
+					deletes = append(deletes, deleteTask{gameCopy.ID, core.BackupRecordID(record)})
+				}
+			}
+		}
+		if changed {
+			// 状态先落盘再入队，避免 worker 读到旧状态直接跳过
+			if _, err := a.store.UpsertGame(gameCopy); err != nil {
+				wailsruntime.LogErrorf(a.ctx, "requeue backup delete state persist failed for %s: %v", gameCopy.ID, err)
+				continue
+			}
+		}
+	}
+	for _, task := range uploads {
+		a.enqueueBackupUpload(queuedBackupUpload{GameID: task.gameID, BackupID: task.backupID, AccountID: task.accountID})
+	}
+	for _, task := range deletes {
+		a.enqueueBackupDelete(queuedBackupDelete{GameID: task.gameID, BackupID: task.backupID})
+	}
 }
 
 func (a *App) startDeleteWorker() {
@@ -207,6 +295,7 @@ func (a *App) domReady(ctx context.Context) {
 
 func (a *App) shutdown(ctx context.Context) {
 	a.ctx = ctx
+	a.closeSyncTracking()
 	if err := a.saveCurrentWindowState(); err != nil {
 		wailsruntime.LogErrorf(ctx, "save window state failed: %v", err)
 	}
@@ -295,9 +384,15 @@ func (a *App) SaveAccount(account core.CloudflareAccount) (core.DashboardSnapsho
 	if err := a.ensureReady(); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
-	if _, err := a.store.UpsertAccount(account); err != nil {
+	finish, err := a.beginLocalAccountMutation()
+	if err != nil {
 		return core.DashboardSnapshot{}, err
 	}
+	if _, err := a.store.UpsertAccount(account); err != nil {
+		finish()
+		return core.DashboardSnapshot{}, err
+	}
+	finish()
 	a.queueRemoteCatalogSync("account save")
 	return a.snapshot()
 }
@@ -318,10 +413,25 @@ func (a *App) SetRecoveryPassword(password string) (core.DashboardSnapshot, erro
 		return core.DashboardSnapshot{}, err
 	}
 	a.queueRemoteCatalogSync("recovery password update")
+	if migration := a.store.Snapshot().StorageMigration; migration != nil && migration.ConflictGameID == "" {
+		go func(transactionID string) {
+			if _, err := a.ResumeStorageMigration(core.StorageMigrationResumeRequest{TransactionID: transactionID}); err != nil {
+				wailsruntime.LogErrorf(a.ctx, "resume storage migration after recovery password update failed: %v", err)
+			}
+		}(migration.TransactionID)
+	}
 	return a.snapshot()
 }
 
 func (a *App) RestoreFromPrimary(password string) (core.DashboardSnapshot, error) {
+	if err := a.ensureReady(); err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+	defer finish()
 	return a.restoreFromPrimary(password, true)
 }
 
@@ -335,8 +445,14 @@ func (a *App) restoreFromPrimary(password string, verifyAfter bool) (core.Dashbo
 	if !ok {
 		return core.DashboardSnapshot{}, errors.New(msgPrimaryAccountNotConfigured)
 	}
-	d1 := core.NewD1Client(primary)
-	catalog, encrypted, err := d1.LoadRemoteCatalog(a.syncContext())
+	catalogStore, err := a.catalogStoreFor(primary)
+	if err != nil {
+		_ = a.store.SetRecoveryStatus(func(status *core.RecoveryStatus) {
+			status.LastRecoveryError = err.Error()
+		})
+		return core.DashboardSnapshot{}, err
+	}
+	catalog, encrypted, err := catalogStore.LoadRemoteCatalog(a.syncContext())
 	if err != nil {
 		_ = a.store.SetRecoveryStatus(func(status *core.RecoveryStatus) {
 			status.LastRecoveryError = err.Error()
@@ -344,25 +460,11 @@ func (a *App) restoreFromPrimary(password string, verifyAfter bool) (core.Dashbo
 		return core.DashboardSnapshot{}, err
 	}
 
-	for index := range catalog.Accounts {
-		account := catalog.Accounts[index]
-		if blob, ok := encrypted[account.ID]; ok && !account.IsPrimary && password != "" && (account.R2AccessKeyID == "" || account.R2SecretAccessKey == "") {
-			decrypted, err := core.DecryptAccountCredentials(account, blob, password)
-			if err != nil {
-				account.VerificationState = "invalid"
-				account.LastError = msgRecoveryPasswordDecryptFailed
-			} else {
-				account = decrypted
-				account.CredentialsBackedUp = true
-				account.VerificationState = "pending"
-			}
-		}
-		if account.IsPrimary && account.ID == primary.ID {
-			account.APIToken = primary.APIToken
-			account.R2AccessKeyID = primary.R2AccessKeyID
-			account.R2SecretAccessKey = primary.R2SecretAccessKey
-		}
-		catalog.Accounts[index] = account
+	catalog, failures := prepareCatalogForOrdinaryMerge(a.store.Snapshot(), catalog, encrypted, password)
+	if len(failures) > 0 {
+		_ = a.store.SetRecoveryStatus(func(status *core.RecoveryStatus) {
+			status.LastRecoveryError = msgRecoveryPasswordDecryptFailed
+		})
 	}
 
 	if err := a.store.MergeRemoteCatalog(catalog); err != nil {
@@ -382,22 +484,35 @@ func (a *App) VerifyAccount(accountID string) (core.DashboardSnapshot, error) {
 	if err := a.ensureReady(); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+	defer finish()
 
 	account, err := findAccount(a.store.Snapshot(), accountID)
 	if err != nil {
 		return core.DashboardSnapshot{}, err
 	}
 
-	verifiedAccount, _ := core.VerifyCloudflareAccount(a.syncContext(), account)
-	if verifiedAccount.LastError == "" {
-		verifiedAccount.VerificationState = "valid"
-	} else {
-		verifiedAccount.VerificationState = "invalid"
+	verifiedAccount, _ := verifyStorageAccount(a.syncContext(), account)
+	verificationState := "valid"
+	if verifiedAccount.LastError != "" {
+		verificationState = "invalid"
 	}
-	if _, err := a.store.UpsertAccount(verifiedAccount); err != nil {
+	// 只回写验证结果字段（M2）；验证结果不改动目录配置，也无需触发目录推送
+	if err := a.store.UpdateAccountVerification(
+		account.ID,
+		verificationState,
+		verifiedAccount.LastVerifiedAt,
+		verifiedAccount.LastError,
+		verifiedAccount.UsageWarning,
+		verifiedAccount.UsedBytes,
+		verifiedAccount.TokenExpiresAt,
+		verifiedAccount.CredentialsBackedUp,
+	); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
-	a.queueRemoteCatalogSync("account verification")
 	if verifiedAccount.IsPrimary && verifiedAccount.LastError == "" {
 		snapshot, err := a.restoreFromPrimary("", false)
 		if err != nil {
@@ -414,6 +529,11 @@ func (a *App) DeleteAccount(accountID string) (core.DashboardSnapshot, error) {
 	if err := a.ensureReady(); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+	defer finish()
 	if err := a.store.DeleteAccount(accountID); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
@@ -421,10 +541,186 @@ func (a *App) DeleteAccount(accountID string) (core.DashboardSnapshot, error) {
 	return a.snapshot()
 }
 
+// emitStorageSwitchProgress 广播存储切换进度事件（契约：storage:switch_progress）。
+// upload 阶段 current/total 为游戏序号/总数，其余阶段为 0/0。
+func (a *App) emitStorageSwitchProgress(stage string, message string, current int, total int) {
+	a.emitRuntimeEvent("storage:switch_progress", map[string]any{
+		"stage":   stage,
+		"message": message,
+		"current": current,
+		"total":   total,
+	})
+}
+
+// SwitchStoragePrimary 运行时切换存储方式：验证目标账号 → 旧账号全部停用（保留记录）→
+// 目标账号入主并重挂全部游戏、清零同步锚点 → 同步目录与每游戏存档到目标云端 →
+// 返回新快照。前置的"先同步旧云端"由前端负责，这里不做旧云端同步。
+// 失败语义：验证阶段失败无任何改动；账号切换落盘后的目录/存档上传失败不回滚，
+// 由 dirty 标记与用户手动同步自愈。
+func (a *App) legacySwitchStoragePrimary(request core.StorageSwitchRequest) (core.DashboardSnapshot, error) {
+	if err := a.ensureReady(); err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+
+	// 并发重入闸：切换期间拒绝再次进入
+	a.switchStorageMu.Lock()
+	if a.switchStorageBusy {
+		a.switchStorageMu.Unlock()
+		return core.DashboardSnapshot{}, errors.New(msgStorageSwitchBusy)
+	}
+	a.switchStorageBusy = true
+	a.switchStorageMu.Unlock()
+	defer func() {
+		a.switchStorageMu.Lock()
+		a.switchStorageBusy = false
+		a.switchStorageMu.Unlock()
+	}()
+
+	account, err := resolveStorageSwitchTarget(a.store.Snapshot(), request)
+	if err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+
+	// 第 1 步 verify：校验新账号连通/可写，失败即返回，全程无副作用
+	a.emitStorageSwitchProgress("verify", msgStorageSwitchVerifying, 0, 0)
+	verifiedAccount, verifyErr := verifyStorageAccount(a.syncContext(), account)
+	if verifiedAccount.LastError != "" {
+		return core.DashboardSnapshot{}, fmt.Errorf(msgStorageSwitchVerifyFailed, verifiedAccount.LastError)
+	}
+	if verifyErr != nil {
+		return core.DashboardSnapshot{}, fmt.Errorf(msgStorageSwitchVerifyFailed, verifyErr)
+	}
+	verifiedAccount.ID = account.ID
+	verifiedAccount.VerificationState = "valid"
+
+	// 第 2 步 account：store 层一次锁内原子完成旧账号停用、新账号入主、游戏重挂与锚点清零
+	a.emitStorageSwitchProgress("account", msgStorageSwitchAccount, 0, 0)
+	newAccount, err := a.store.SwitchPrimaryStorage(verifiedAccount)
+	if err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+	a.emitStateUpdated()
+
+	// 第 3 步 catalog：新账号建 schema 后走既有收敛环把目录推上新云端
+	// （findPrimaryAccount 此时已解析到新主账号）
+	a.emitStorageSwitchProgress("catalog", msgStorageSwitchCatalog, 0, 0)
+	catalogStore, err := newCatalogStore(newAccount)
+	if err == nil {
+		err = catalogStore.EnsureSchema(a.syncContext())
+	}
+	if err == nil {
+		if markErr := a.store.MarkCatalogDirty(); markErr != nil {
+			wailsruntime.LogErrorf(a.ctx, "mark catalog dirty during storage switch failed: %v", markErr)
+		}
+		err = a.syncRemoteCatalog()
+	}
+	if err != nil {
+		// 不回滚：本地已是新配置，目录保持 dirty，由后台重试/手动同步自愈
+		_ = a.store.MarkCatalogSyncFailed(err.Error())
+		return core.DashboardSnapshot{}, fmt.Errorf(msgStorageSwitchCatalogFailed, err)
+	}
+
+	// 第 4 步 upload：逐个游戏走普通同步（目标端为空时上传，已有数据时沿用冲突规则）；
+	// 单游戏失败记录继续，最后失败清单入 done 消息
+	failures := a.syncGamesOnNewStorage()
+	// 本地 zip 仍存在的备份记录改挂新账号并重新入上传队列（复用启动重入机制）
+	a.repointLocalBackupsToAccount(newAccount.ID)
+
+	// 第 5 步 done
+	doneMessage := msgStorageSwitchDone
+	if len(failures) > 0 {
+		doneMessage = fmt.Sprintf(msgStorageSwitchDoneWithFailures, strings.Join(failures, "、"))
+	}
+	a.emitStorageSwitchProgress("done", doneMessage, 0, 0)
+	return a.snapshot()
+}
+
+// syncGamesOnNewStorage 对每个 savePath 非空且启用同步的游戏复用 RunSync，
+// 内部含 lockGameSync 与 SyncGameWithGateway；返回失败或冲突游戏名清单。
+func (a *App) syncGamesOnNewStorage() []string {
+	state := a.store.Snapshot()
+	targets := make([]core.Game, 0, len(state.Games))
+	for _, game := range state.Games {
+		if strings.TrimSpace(game.SavePath) == "" || !game.Sync.Enabled {
+			continue
+		}
+		targets = append(targets, game)
+	}
+	total := len(targets)
+	var failures []string
+	for index, game := range targets {
+		a.emitStorageSwitchProgress("upload", fmt.Sprintf(msgStorageSwitchUploading, game.Name, index+1, total), index+1, total)
+		snapshot, err := a.RunSync(core.SyncRunRequest{GameID: game.ID})
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s（%v）", game.Name, err))
+			continue
+		}
+		if synced, findErr := findGame(snapshot.State, game.ID); findErr == nil && synced.LastSync != nil {
+			switch synced.LastSync.Status {
+			case "success":
+				// 已完成。
+			case "conflict":
+				failures = append(failures, fmt.Sprintf("%s（存在同步冲突）", game.Name))
+			default:
+				message := strings.TrimSpace(synced.LastSync.Message)
+				if message == "" {
+					message = synced.LastSync.Status
+				}
+				failures = append(failures, fmt.Sprintf("%s（%s）", game.Name, message))
+			}
+		}
+	}
+	return failures
+}
+
+// repointLocalBackupsToAccount 把 BackupRegistry 中本地 zip 仍存在的备份记录改挂
+// 新账号并置为 pending_upload，随后复用 requeuePendingBackupOperations 重新入上传队列。
+// 带删除意图或本地 zip 已缺失的记录保持原状（仅保留历史）。
+func (a *App) repointLocalBackupsToAccount(accountID string) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return
+	}
+	for _, game := range a.store.Snapshot().Games {
+		gameCopy := game
+		changed := false
+		for _, rawRecord := range gameCopy.BackupRegistry {
+			record := normalizeBackupRecord(rawRecord)
+			if record.Filename == "" || record.DeletedAt != nil {
+				continue
+			}
+			if record.Status == core.BackupStatusPendingDelete || record.Status == core.BackupStatusDeleteFailed {
+				continue
+			}
+			localPath := filepath.Join(a.store.DataDir(), "backups", gameCopy.ID, record.Filename)
+			if _, statErr := os.Stat(localPath); statErr != nil {
+				continue
+			}
+			record.AccountID = accountID
+			record.Status = core.BackupStatusPendingUpload
+			record.LastError = ""
+			upsertBackupRecord(&gameCopy, record)
+			changed = true
+		}
+		if changed {
+			// 状态先落盘再入队，避免 worker 读到旧状态直接跳过（与启动重入同一纪律）
+			if _, err := a.store.UpsertGame(gameCopy); err != nil {
+				wailsruntime.LogErrorf(a.ctx, "repoint backups to new storage failed for %s: %v", gameCopy.ID, err)
+			}
+		}
+	}
+	a.requeuePendingBackupOperations()
+}
+
 func (a *App) SaveGame(game core.Game) (core.DashboardSnapshot, error) {
 	if err := a.ensureReady(); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+	defer finish()
 	if strings.TrimSpace(game.ID) == "" {
 		game.ID = core.NewID()
 	}
@@ -444,9 +740,16 @@ func (a *App) SaveGame(game core.Game) (core.DashboardSnapshot, error) {
 	if err != nil {
 		return core.DashboardSnapshot{}, err
 	}
-	if _, err := a.store.UpsertGame(game); err != nil {
+	storedGame, err := a.store.UpsertGame(game)
+	if err != nil {
 		return core.DashboardSnapshot{}, err
 	}
+	if err := a.refreshGameSyncTracking(storedGame, false); err != nil {
+		if a.ctx != nil {
+			wailsruntime.LogWarningf(a.ctx, "refresh save tracking after game save failed: %v", err)
+		}
+	}
+	a.updateCoverIndexForGame(storedGame)
 	if coverWarning != "" {
 		a.emitRuntimeEvent("cover:warning", map[string]string{
 			"gameId":  game.ID,
@@ -516,6 +819,11 @@ func (a *App) ResolveCoverSource(identifier string) (string, error) {
 		return identifier, nil
 	}
 	if isCoverReference(identifier) {
+		finish, err := a.beginRemoteOperation()
+		if err != nil {
+			return "", err
+		}
+		defer finish()
 		data, err := a.loadCoverReferenceBytes(identifier)
 		if err != nil {
 			return "", err
@@ -548,6 +856,7 @@ func (a *App) prepareAndPersistCover(game *core.Game, existing *core.Game, state
 	}
 
 	if existing != nil && strings.TrimSpace(existing.CoverPath) == coverPath {
+		game.CoverUpdatedAt = existing.CoverUpdatedAt
 		if strings.TrimSpace(game.CoverSourceType) == "" {
 			game.CoverSourceType = existing.CoverSourceType
 		}
@@ -581,13 +890,7 @@ func (a *App) prepareAndPersistCover(game *core.Game, existing *core.Game, state
 	if mimeType != "" {
 		game.CoverMimeType = mimeType
 	}
-	game.CoverUpdatedAt = time.Now()
-
-	if existing != nil &&
-		strings.TrimSpace(existing.CoverSourceType) == strings.TrimSpace(game.CoverSourceType) &&
-		strings.TrimSpace(existing.CoverSource) == strings.TrimSpace(game.CoverSource) &&
-		strings.TrimSpace(existing.CoverCloudAccountID) != "" &&
-		strings.TrimSpace(existing.CoverCloudKey) != "" {
+	if existing != nil && shouldReuseExistingCoverReference(state, *game, *existing) {
 		game.CoverCloudAccountID = existing.CoverCloudAccountID
 		game.CoverCloudKey = existing.CoverCloudKey
 		return "", nil
@@ -597,6 +900,10 @@ func (a *App) prepareAndPersistCover(game *core.Game, existing *core.Game, state
 	if accountID != "" && objectKey != "" {
 		game.CoverCloudAccountID = accountID
 		game.CoverCloudKey = objectKey
+		if existing == nil || existing.CoverCloudAccountID != accountID || existing.CoverCloudKey != objectKey {
+			game.CoverUpdatedAt = time.Now()
+		}
+		_ = a.writeCoverCacheMetadata(*game, localPath)
 		return warning, nil
 	}
 
@@ -612,6 +919,46 @@ func (a *App) prepareAndPersistCover(game *core.Game, existing *core.Game, state
 	return warning, nil
 }
 
+func shouldReuseExistingCoverReference(state core.AppState, game, existing core.Game) bool {
+	if strings.TrimSpace(existing.CoverSourceType) != strings.TrimSpace(game.CoverSourceType) ||
+		strings.TrimSpace(existing.CoverSource) != strings.TrimSpace(game.CoverSource) ||
+		strings.TrimSpace(existing.CoverCloudAccountID) == "" ||
+		strings.TrimSpace(existing.CoverCloudKey) == "" {
+		return false
+	}
+	target, ok := selectCoverStorageAccount(state, game)
+	if ok && target.ID != strings.TrimSpace(existing.CoverCloudAccountID) {
+		return false
+	}
+	expectedHash := coverFingerprintFromObjectKey(existing.CoverCloudKey)
+	if expectedHash == "" || strings.TrimSpace(game.CoverLocalPath) == "" {
+		return false
+	}
+	actualHash, err := sha256FileHex(game.CoverLocalPath)
+	return err == nil && strings.EqualFold(actualHash, expectedHash)
+}
+
+func (a *App) syncGameCover(state core.AppState, game core.Game) error {
+	if strings.TrimSpace(game.CoverPath) == "" &&
+		strings.TrimSpace(game.CoverSource) == "" &&
+		strings.TrimSpace(game.CoverLocalPath) == "" {
+		return nil
+	}
+	updated := game
+	if strings.TrimSpace(updated.CoverPath) == "" {
+		updated.CoverPath = firstNonEmpty(updated.CoverSource, updated.CoverLocalPath)
+	}
+	warning, err := a.prepareAndPersistCover(&updated, &game, state)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(warning) != "" {
+		return errors.New(warning)
+	}
+	_, err = a.store.UpsertGame(updated)
+	return err
+}
+
 func (a *App) resolveGameCoverSource(game core.Game) (string, error) {
 	if strings.TrimSpace(game.CoverPath) == "" &&
 		strings.TrimSpace(game.CoverLocalPath) == "" &&
@@ -620,21 +967,32 @@ func (a *App) resolveGameCoverSource(game core.Game) (string, error) {
 	}
 
 	var lastErr error
-	if cachedPath := a.locateCoverCache(game); cachedPath != "" {
-		if isCoverCacheFreshForGame(game, cachedPath) {
-			a.persistResolvedCoverCache(game.ID, cachedPath, game.CoverMimeType)
-			data, err := os.ReadFile(cachedPath)
-			if err == nil {
-				return dataURLForBytes(cachedPath, data), nil
+	if source, found, err := a.resolveCachedGameCover(game); found {
+		return source, nil
+	} else if err != nil {
+		lastErr = err
+	}
+
+	if localSource := normalizeLocalCoverPath(firstNonEmpty(game.CoverSource, game.CoverPath)); localSource != "" && !isDirectCoverSource(localSource) && !isCoverReference(localSource) {
+		if localPath, mimeType, err := a.copyLocalCoverToCache(game.ID, localSource); err == nil {
+			_ = a.writeCoverCacheMetadata(game, localPath)
+			a.persistResolvedCoverCache(game.ID, localPath, mimeType)
+			data, readErr := os.ReadFile(localPath)
+			if readErr == nil {
+				return dataURLForBytes(localPath, data), nil
 			}
-		} else {
-			lastErr = errors.New("cover cache is stale")
+			lastErr = readErr
+		} else if data, err := os.ReadFile(localSource); err == nil {
+			return dataURLForBytes(localSource, data), nil
+		} else if lastErr == nil {
+			lastErr = err
 		}
 	}
 
 	if strings.EqualFold(strings.TrimSpace(game.CoverSourceType), coverSourceRemoteURL) {
 		localPath, mimeType, err := a.downloadRemoteCoverToCache(game.ID, firstNonEmpty(game.CoverSource, game.CoverPath))
 		if err == nil {
+			_ = a.writeCoverCacheMetadata(game, localPath)
 			a.persistResolvedCoverCache(game.ID, localPath, mimeType)
 			if mimeType != "" {
 				game.CoverMimeType = mimeType
@@ -649,25 +1007,32 @@ func (a *App) resolveGameCoverSource(game core.Game) (string, error) {
 		}
 	}
 
-	if localSource := normalizeLocalCoverPath(firstNonEmpty(game.CoverSource, game.CoverPath)); localSource != "" && !isDirectCoverSource(localSource) && !isCoverReference(localSource) {
-		if localPath, mimeType, err := a.copyLocalCoverToCache(game.ID, localSource); err == nil {
-			a.persistResolvedCoverCache(game.ID, localPath, mimeType)
-			data, readErr := os.ReadFile(localPath)
-			if readErr == nil {
-				return dataURLForBytes(localPath, data), nil
-			}
-			lastErr = readErr
-		} else if data, err := os.ReadFile(localSource); err == nil {
-			return dataURLForBytes(localSource, data), nil
-		} else if lastErr == nil {
-			lastErr = err
-		}
-	}
-
 	accountID, objectKey := coverCloudLocation(game)
 	if accountID != "" && objectKey != "" {
+		finish, err := a.beginRemoteOperation()
+		if err != nil {
+			return "", err
+		}
+		defer finish()
+
+		if current, findErr := findGame(a.store.Snapshot(), game.ID); findErr == nil {
+			game = current
+		}
+		if source, found, cacheErr := a.resolveCachedGameCover(game); found {
+			return source, nil
+		} else if cacheErr != nil {
+			lastErr = cacheErr
+		}
+		accountID, objectKey = coverCloudLocation(game)
+		if accountID == "" || objectKey == "" {
+			if lastErr != nil {
+				return "", lastErr
+			}
+			return "", nil
+		}
 		localPath, mimeType, err := a.downloadCloudCoverToCache(game.ID, accountID, objectKey)
 		if err == nil {
+			_ = a.writeCoverCacheMetadata(game, localPath)
 			a.persistResolvedCoverCache(game.ID, localPath, mimeType)
 			data, readErr := os.ReadFile(localPath)
 			if readErr == nil {
@@ -685,32 +1050,90 @@ func (a *App) resolveGameCoverSource(game core.Game) (string, error) {
 	return "", nil
 }
 
-func isCoverCacheFreshForGame(game core.Game, cachedPath string) bool {
-	if strings.TrimSpace(cachedPath) == "" {
-		return false
+func (a *App) resolveCachedGameCover(game core.Game) (string, bool, error) {
+	cachedPath := a.locateCoverCache(game)
+	if cachedPath == "" {
+		return "", false, nil
 	}
-	if strings.TrimSpace(game.CoverSourceType) != coverSourceRemoteURL {
-		return true
+	fresh, repairMetadata := coverCacheFreshnessForGame(game, cachedPath)
+	if !fresh {
+		return "", false, errors.New("cover cache is stale")
+	}
+	if repairMetadata {
+		if err := a.writeCoverCacheMetadata(game, cachedPath); err != nil && a.ctx != nil {
+			wailsruntime.LogWarningf(a.ctx, "repair cover cache metadata failed for %s: %v", game.ID, err)
+		}
+	}
+	data, err := os.ReadFile(cachedPath)
+	if err != nil {
+		return "", false, err
+	}
+	a.persistResolvedCoverCache(game.ID, cachedPath, game.CoverMimeType)
+	return dataURLForBytes(cachedPath, data), true, nil
+}
+
+func coverCacheFreshnessForGame(game core.Game, cachedPath string) (fresh bool, repairMetadata bool) {
+	if strings.TrimSpace(cachedPath) == "" {
+		return false, false
+	}
+	if accountID, objectKey := coverCloudLocation(game); accountID != "" && objectKey != "" {
+		expectedHash := coverFingerprintFromObjectKey(objectKey)
+		content, err := os.ReadFile(cachedPath + ".json")
+		if err == nil {
+			var metadata coverCacheMetadata
+			if json.Unmarshal(content, &metadata) == nil &&
+				metadata.AccountID == accountID && metadata.ObjectKey == objectKey &&
+				metadata.CoverUpdatedAt.Equal(game.CoverUpdatedAt) {
+				if metadata.SHA256 == "" {
+					if expectedHash == "" {
+						return true, false
+					}
+				} else {
+					hash, hashErr := sha256FileHex(cachedPath)
+					if hashErr == nil && strings.EqualFold(hash, metadata.SHA256) &&
+						(expectedHash == "" || strings.EqualFold(hash, expectedHash)) {
+						return true, false
+					}
+				}
+			}
+		}
+		if expectedHash != "" {
+			hash, hashErr := sha256FileHex(cachedPath)
+			matched := hashErr == nil && strings.EqualFold(hash, expectedHash)
+			return matched, matched
+		}
+		if !strings.Contains(filepath.Base(objectKey), "cover.") {
+			return false, false
+		}
+	}
+	if strings.TrimSpace(game.CoverSourceType) != coverSourceRemoteURL && game.CoverUpdatedAt.IsZero() {
+		return true, false
 	}
 	if game.CoverUpdatedAt.IsZero() {
-		return true
+		return true, false
 	}
 	info, err := os.Stat(cachedPath)
 	if err != nil {
-		return false
+		return false, false
 	}
-	return !info.ModTime().Before(game.CoverUpdatedAt.Add(-5 * time.Second))
+	return !info.ModTime().Before(game.CoverUpdatedAt.Add(-5 * time.Second)), false
 }
 
 func (a *App) DeleteGame(gameID string) (core.DashboardSnapshot, error) {
 	if err := a.ensureReady(); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+	defer finish()
 
 	state := a.store.Snapshot()
 	if err := a.store.DeleteGame(gameID); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
+	a.removeGameSyncTracking(gameID)
 	a.queueRemoteCatalogSync("game delete")
 	if err := a.cleanupDeletedGameRemote(state, gameID); err != nil {
 		wailsruntime.LogErrorf(a.ctx, "cleanup deleted game %s failed: %v", gameID, err)
@@ -771,6 +1194,21 @@ func (a *App) runDeleteWorker() {
 	}
 }
 
+func (a *App) enqueueGameDelete(request queuedGameDelete) {
+	request.GameID = strings.TrimSpace(request.GameID)
+	if request.GameID == "" {
+		return
+	}
+	a.deleteGameMu.Lock()
+	if _, exists := a.deleteGamePending[request.GameID]; exists {
+		a.deleteGameMu.Unlock()
+		return
+	}
+	a.deleteGamePending[request.GameID] = request
+	a.deleteGameMu.Unlock()
+	a.deleteGameQueue <- request
+}
+
 func (a *App) processQueuedGameDelete(request queuedGameDelete) {
 	if err := a.ensureReady(); err != nil {
 		a.finishQueuedGameDelete(request.GameID)
@@ -781,6 +1219,14 @@ func (a *App) processQueuedGameDelete(request queuedGameDelete) {
 		})
 		return
 	}
+	finishRemote, remoteErr := a.beginRemoteOperation()
+	if remoteErr != nil {
+		a.finishQueuedGameDelete(request.GameID)
+		a.emitRuntimeEvent("game:delete_failed", map[string]string{"id": request.GameID, "error": remoteErr.Error(), "stage": "handoff"})
+		time.AfterFunc(30*time.Second, func() { a.enqueueGameDelete(request) })
+		return
+	}
+	defer finishRemote()
 
 	stateBeforeDelete := a.store.Snapshot()
 	if err := a.store.DeleteGame(request.GameID); err != nil {
@@ -790,13 +1236,18 @@ func (a *App) processQueuedGameDelete(request queuedGameDelete) {
 			"error": err.Error(),
 			"stage": "local_delete",
 		})
+		// 删除失败恢复：推送最新快照让前端把乐观移除的条目复原（B1）
+		a.emitStateUpdated()
 		return
 	}
+	a.removeGameSyncTracking(request.GameID)
 
 	a.queueRemoteCatalogSync("game delete")
 	a.emitRuntimeEvent("game:delete_succeeded", map[string]string{
 		"id": request.GameID,
 	})
+	// 本地删除成功必须刷新前端快照，否则已删游戏在下次重渲染时以幽灵条目复现（M6）
+	a.emitStateUpdated()
 
 	if err := a.cleanupDeletedGameRemote(stateBeforeDelete, request.GameID); err != nil {
 		wailsruntime.LogErrorf(a.ctx, "cleanup deleted game %s failed: %v", request.GameID, err)
@@ -805,6 +1256,7 @@ func (a *App) processQueuedGameDelete(request queuedGameDelete) {
 			"error": err.Error(),
 			"stage": "remote_cleanup",
 		})
+		a.emitStateUpdated()
 	}
 
 	a.finishQueuedGameDelete(request.GameID)
@@ -818,12 +1270,12 @@ func (a *App) finishQueuedGameDelete(gameID string) {
 
 func (a *App) enqueueBackupUpload(request queuedBackupUpload) {
 	request.GameID = strings.TrimSpace(request.GameID)
-	request.Filename = strings.TrimSpace(request.Filename)
+	request.BackupID = strings.TrimSpace(request.BackupID)
 	request.AccountID = strings.TrimSpace(request.AccountID)
-	if request.GameID == "" || request.Filename == "" || request.AccountID == "" {
+	if request.GameID == "" || request.BackupID == "" || request.AccountID == "" {
 		return
 	}
-	key := queuedBackupUploadKey(request.GameID, request.Filename)
+	key := queuedBackupUploadKey(request.GameID, request.BackupID)
 	a.backupUploadMu.Lock()
 	if _, exists := a.backupUploadSet[key]; exists {
 		a.backupUploadMu.Unlock()
@@ -834,9 +1286,9 @@ func (a *App) enqueueBackupUpload(request queuedBackupUpload) {
 	a.backupUploadQueue <- request
 }
 
-func (a *App) finishQueuedBackupUpload(gameID string, filename string) {
+func (a *App) finishQueuedBackupUpload(gameID string, backupID string) {
 	a.backupUploadMu.Lock()
-	delete(a.backupUploadSet, queuedBackupUploadKey(gameID, filename))
+	delete(a.backupUploadSet, queuedBackupUploadKey(gameID, backupID))
 	a.backupUploadMu.Unlock()
 }
 
@@ -847,16 +1299,22 @@ func (a *App) runBackupUploadWorker() {
 }
 
 func (a *App) processQueuedBackupUpload(request queuedBackupUpload) {
-	defer a.finishQueuedBackupUpload(request.GameID, request.Filename)
+	defer a.finishQueuedBackupUpload(request.GameID, request.BackupID)
 
 	if err := a.ensureReady(); err != nil {
 		return
 	}
+	finishRemote, remoteErr := a.beginRemoteOperation()
+	if remoteErr != nil {
+		time.AfterFunc(30*time.Second, func() { a.enqueueBackupUpload(request) })
+		return
+	}
+	defer finishRemote()
 	game, err := findGame(a.store.Snapshot(), request.GameID)
 	if err != nil {
 		return
 	}
-	record, _, ok := findBackupRecord(game, request.Filename)
+	record, _, ok := findBackupRecord(game, request.BackupID)
 	if !ok || record.DeletedAt != nil {
 		return
 	}
@@ -865,40 +1323,41 @@ func (a *App) processQueuedBackupUpload(request queuedBackupUpload) {
 		return
 	}
 
-	backupPath := filepath.Join(a.store.DataDir(), "backups", game.ID, request.Filename)
+	backupPath := core.ExistingBackupLocalPathForRecord(a.store.DataDir(), game.ID, record)
 	info, statErr := os.Stat(backupPath)
 	if statErr != nil {
-		a.markBackupUploadFailed(game, request.Filename, statErr.Error())
+		a.markBackupUploadFailed(game, request.BackupID, statErr.Error())
 		return
 	}
 
 	account, err := findAccount(a.store.Snapshot(), request.AccountID)
 	if err != nil {
-		a.markBackupUploadFailed(game, request.Filename, err.Error())
+		a.markBackupUploadFailed(game, request.BackupID, err.Error())
 		return
 	}
 	state := a.store.Snapshot()
 	primaryAccount, err := findPrimaryAccount(state)
 	if err != nil {
-		a.markBackupUploadFailed(game, request.Filename, err.Error())
+		a.markBackupUploadFailed(game, request.BackupID, err.Error())
 		return
 	}
-	gateway, err := core.NewSplitCloudflareGateway(a.syncContext(), primaryAccount, account)
+	gateway, err := newSplitStorageGateway(a.syncContext(), primaryAccount, account)
 	if err != nil {
-		a.markBackupUploadFailed(game, request.Filename, err.Error())
+		a.markBackupUploadFailed(game, request.BackupID, err.Error())
 		return
 	}
 
-	remoteKey := fmt.Sprintf("backups/%s/%s", game.ID, request.Filename)
-	if err := gateway.R2.PutObjectFromFile(a.syncContext(), remoteKey, backupPath); err != nil {
-		a.markBackupUploadFailed(game, request.Filename, err.Error())
+	remoteKey := core.BackupObjectKeyForRecord(game.ID, record)
+	if err := gateway.Objects.PutObjectFromFile(a.syncContext(), remoteKey, backupPath); err != nil {
+		a.markBackupUploadFailed(game, request.BackupID, err.Error())
 		return
 	}
 	if record.Type == "auto" {
-		core.NewBackupManager(a.engine).CleanupCloudAutoBackups(a.syncContext(), gateway, game.ID, request.Filename)
+		core.NewBackupManager(a.engine).CleanupCloudAutoBackups(a.syncContext(), gateway, game.ID, record.SourceDeviceID, record.Filename)
 	}
 
 	record.AccountID = request.AccountID
+	record.ObjectKey = remoteKey
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = info.ModTime()
 	}
@@ -908,18 +1367,23 @@ func (a *App) processQueuedBackupUpload(request queuedBackupUpload) {
 	record.LastDeleteError = ""
 	record.DeleteRetryAt = nil
 	upsertBackupRecord(&game, record)
+	if record.Type == "auto" {
+		// 新 auto 备份此刻才真正 ready：清理更旧的 auto 记录与本地旧 zip（M9）
+		cleanupOlderAutoBackupArtifacts(&game, record, a.store.DataDir())
+	}
 	if record.Type != "auto" {
 		game.BackupStorageAccountID = request.AccountID
 	}
 	if _, err := a.store.UpsertGame(game); err != nil {
-		wailsruntime.LogErrorf(a.ctx, "persist backup upload success %s/%s failed: %v", request.GameID, request.Filename, err)
+		wailsruntime.LogErrorf(a.ctx, "persist backup upload success %s/%s failed: %v", request.GameID, request.BackupID, err)
 		return
 	}
 	a.queueRemoteCatalogSync("backup upload success")
 	a.emitStateUpdated()
 	a.emitRuntimeEvent("game:backup_upload_succeeded", map[string]string{
 		"id":       request.GameID,
-		"filename": request.Filename,
+		"filename": record.Filename,
+		"backupId": request.BackupID,
 	})
 	if record.Type == "auto" {
 		a.emitRuntimeEvent("game:backup_success", request.GameID)
@@ -928,11 +1392,11 @@ func (a *App) processQueuedBackupUpload(request queuedBackupUpload) {
 
 func (a *App) enqueueBackupDelete(request queuedBackupDelete) {
 	request.GameID = strings.TrimSpace(request.GameID)
-	request.Filename = strings.TrimSpace(request.Filename)
-	if request.GameID == "" || request.Filename == "" {
+	request.BackupID = strings.TrimSpace(request.BackupID)
+	if request.GameID == "" || request.BackupID == "" {
 		return
 	}
-	key := queuedBackupDeleteKey(request.GameID, request.Filename)
+	key := queuedBackupDeleteKey(request.GameID, request.BackupID)
 	a.backupDeleteMu.Lock()
 	if _, exists := a.backupDeleteSet[key]; exists {
 		a.backupDeleteMu.Unlock()
@@ -943,9 +1407,9 @@ func (a *App) enqueueBackupDelete(request queuedBackupDelete) {
 	a.backupDeleteQueue <- request
 }
 
-func (a *App) finishQueuedBackupDelete(gameID string, filename string) {
+func (a *App) finishQueuedBackupDelete(gameID string, backupID string) {
 	a.backupDeleteMu.Lock()
-	delete(a.backupDeleteSet, queuedBackupDeleteKey(gameID, filename))
+	delete(a.backupDeleteSet, queuedBackupDeleteKey(gameID, backupID))
 	a.backupDeleteMu.Unlock()
 }
 
@@ -956,16 +1420,22 @@ func (a *App) runBackupDeleteWorker() {
 }
 
 func (a *App) processQueuedBackupDelete(request queuedBackupDelete) {
-	defer a.finishQueuedBackupDelete(request.GameID, request.Filename)
+	defer a.finishQueuedBackupDelete(request.GameID, request.BackupID)
 
 	if err := a.ensureReady(); err != nil {
 		return
 	}
+	finishRemote, remoteErr := a.beginRemoteOperation()
+	if remoteErr != nil {
+		time.AfterFunc(30*time.Second, func() { a.enqueueBackupDelete(request) })
+		return
+	}
+	defer finishRemote()
 	game, err := findGame(a.store.Snapshot(), request.GameID)
 	if err != nil {
 		return
 	}
-	record, _, ok := findBackupRecord(game, request.Filename)
+	record, _, ok := findBackupRecord(game, request.BackupID)
 	if !ok || record.DeletedAt != nil {
 		return
 	}
@@ -976,26 +1446,27 @@ func (a *App) processQueuedBackupDelete(request queuedBackupDelete) {
 
 	gateways, gatewayErr := a.getBackupGateways(a.ctx, game)
 	if gatewayErr != nil {
-		a.markBackupDeleteFailed(game, request.Filename, gatewayErr.Error())
+		a.markBackupDeleteFailed(game, request.BackupID, gatewayErr.Error())
 		return
 	}
 	bm := core.NewBackupManager(a.engine)
-	if err := bm.DeleteBackup(a.ctx, game, request.Filename, a.store.DataDir(), gateways); err != nil {
-		a.markBackupDeleteFailed(game, request.Filename, err.Error())
+	if err := bm.DeleteBackup(a.ctx, game, request.BackupID, a.store.DataDir(), gateways); err != nil {
+		a.markBackupDeleteFailed(game, request.BackupID, err.Error())
 		return
 	}
-	if err := a.finalizeBackupDeletion(game, request.Filename); err != nil {
-		wailsruntime.LogErrorf(a.ctx, "finalize backup deletion %s/%s failed: %v", request.GameID, request.Filename, err)
+	if err := a.finalizeBackupDeletion(game, request.BackupID); err != nil {
+		wailsruntime.LogErrorf(a.ctx, "finalize backup deletion %s/%s failed: %v", request.GameID, request.BackupID, err)
 		return
 	}
 	a.emitRuntimeEvent("game:backup_delete_succeeded", map[string]string{
 		"id":       request.GameID,
-		"filename": request.Filename,
+		"filename": record.Filename,
+		"backupId": request.BackupID,
 	})
 }
 
-func (a *App) markBackupUploadFailed(game core.Game, filename string, uploadErr string) {
-	record, _, ok := findBackupRecord(game, filename)
+func (a *App) markBackupUploadFailed(game core.Game, backupID string, uploadErr string) {
+	record, _, ok := findBackupRecord(game, backupID)
 	if !ok {
 		return
 	}
@@ -1011,7 +1482,8 @@ func (a *App) markBackupUploadFailed(game core.Game, filename string, uploadErr 
 		a.emitStateUpdated()
 		a.emitRuntimeEvent("game:backup_upload_failed", map[string]string{
 			"id":       game.ID,
-			"filename": filename,
+			"filename": record.Filename,
+			"backupId": backupID,
 			"error":    record.LastError,
 		})
 		if record.Type == "auto" {
@@ -1020,8 +1492,8 @@ func (a *App) markBackupUploadFailed(game core.Game, filename string, uploadErr 
 	}
 }
 
-func (a *App) markBackupDeleteFailed(game core.Game, filename string, deleteErr string) {
-	record, _, ok := findBackupRecord(game, filename)
+func (a *App) markBackupDeleteFailed(game core.Game, backupID string, deleteErr string) {
+	record, _, ok := findBackupRecord(game, backupID)
 	if !ok {
 		return
 	}
@@ -1038,14 +1510,15 @@ func (a *App) markBackupDeleteFailed(game core.Game, filename string, deleteErr 
 		a.emitStateUpdated()
 		a.emitRuntimeEvent("game:backup_delete_failed", map[string]string{
 			"id":       game.ID,
-			"filename": filename,
+			"filename": record.Filename,
+			"backupId": backupID,
 			"error":    record.LastError,
 		})
 	}
 }
 
-func (a *App) finalizeBackupDeletion(game core.Game, filename string) error {
-	removeBackupRecord(&game, filename)
+func (a *App) finalizeBackupDeletion(game core.Game, backupID string) error {
+	removeBackupRecord(&game, backupID)
 	if _, err := a.store.UpsertGame(game); err != nil {
 		return err
 	}
@@ -1062,32 +1535,36 @@ func (a *App) cleanupDeletedGameRemote(state core.AppState, gameID string) error
 			errs = append(errs, clearErr.Error())
 		}
 		if primary, primaryErr := findPrimaryAccount(state); primaryErr == nil {
-			if d1 := core.NewD1Client(primary); d1 != nil {
-				if clearErr := d1.ClearGameRecords(a.syncContext(), gameID); clearErr != nil {
+			if catalogStore, storeErr := newCatalogStore(primary); storeErr == nil {
+				if clearErr := catalogStore.ClearGameRecords(a.syncContext(), gameID); clearErr != nil {
 					errs = append(errs, clearErr.Error())
 				}
+			} else {
+				errs = append(errs, storeErr.Error())
 			}
 		}
-		if r2, err := core.NewR2Client(a.syncContext(), storageAccount); err == nil {
-			if clearErr := r2.ClearGameFiles(a.syncContext(), game.ID); clearErr != nil {
+		if objects, err := newObjectStore(a.syncContext(), storageAccount); err == nil {
+			if clearErr := objects.ClearGameFiles(a.syncContext(), game.ID); clearErr != nil {
 				errs = append(errs, clearErr.Error())
 			}
 		}
 		if gateways, gatewayErr := a.getBackupGateways(a.syncContext(), game); gatewayErr == nil {
 			for _, gateway := range gateways {
-				if gateway == nil || gateway.R2 == nil {
+				if gateway == nil || gateway.Objects == nil {
 					continue
 				}
-				if clearErr := gateway.R2.ClearPrefix(a.syncContext(), fmt.Sprintf("backups/%s/", game.ID)); clearErr != nil {
+				if clearErr := gateway.Objects.ClearPrefix(a.syncContext(), fmt.Sprintf("backups/%s/", game.ID)); clearErr != nil {
 					errs = append(errs, clearErr.Error())
 				}
 			}
 		}
 	} else if primary, primaryErr := findPrimaryAccount(state); primaryErr == nil {
-		if d1 := core.NewD1Client(primary); d1 != nil {
-			if clearErr := d1.ClearGameRecords(a.syncContext(), gameID); clearErr != nil {
+		if catalogStore, storeErr := newCatalogStore(primary); storeErr == nil {
+			if clearErr := catalogStore.ClearGameRecords(a.syncContext(), gameID); clearErr != nil {
 				errs = append(errs, clearErr.Error())
 			}
+		} else {
+			errs = append(errs, storeErr.Error())
 		}
 	}
 
@@ -1115,11 +1592,11 @@ func (a *App) cleanupDeletedGameCover(state core.AppState, game core.Game) error
 	if err != nil {
 		return err
 	}
-	gateway, err := core.NewSplitCloudflareGateway(a.syncContext(), primaryAccount, coverAccount)
+	gateway, err := newSplitStorageGateway(a.syncContext(), primaryAccount, coverAccount)
 	if err != nil {
 		return err
 	}
-	return gateway.R2.ClearPrefix(a.syncContext(), fmt.Sprintf("covers/%s/", strings.TrimSpace(game.ID)))
+	return gateway.Objects.ClearPrefix(a.syncContext(), fmt.Sprintf("covers/%s/", strings.TrimSpace(game.ID)))
 }
 
 func (a *App) cleanupDeletedGameLocalArtifacts(gameID string) error {
@@ -1145,6 +1622,11 @@ func (a *App) ReorderGames(gameIDs []string) (core.DashboardSnapshot, error) {
 	if err := a.ensureReady(); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+	defer finish()
 	if err := a.store.ReorderGames(gameIDs); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
@@ -1156,6 +1638,11 @@ func (a *App) UpdateTagOrder(tags []string) (core.DashboardSnapshot, error) {
 	if err := a.ensureReady(); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+	defer finish()
 
 	prefs := a.store.Snapshot().Preferences
 	prefs.TagOrder = tags
@@ -1171,6 +1658,11 @@ func (a *App) UpdateSidebarNavOrder(items []string) (core.DashboardSnapshot, err
 	if err := a.ensureReady(); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+	defer finish()
 
 	prefs := a.store.Snapshot().Preferences
 	prefs.SidebarNavOrder = items
@@ -1186,6 +1678,11 @@ func (a *App) SavePreferences(preferences core.Preferences) (core.DashboardSnaps
 	if err := a.ensureReady(); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+	defer finish()
 	if err := a.store.SavePreferences(preferences); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
@@ -1233,70 +1730,20 @@ func (a *App) RunSync(request core.SyncRunRequest) (core.DashboardSnapshot, erro
 	if err := a.ensureReady(); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
-
-	request.GameID = strings.TrimSpace(request.GameID)
-	if request.GameID == "" {
-		return core.DashboardSnapshot{}, errors.New(msgGameIDRequired)
-	}
-	unlock := a.lockGameSync(request.GameID)
-	defer unlock()
-
-	state := a.store.Snapshot()
-	game, storageAccount, err := findGameAndAccount(state, request.GameID)
+	finish, err := a.beginRemoteOperation()
 	if err != nil {
 		return core.DashboardSnapshot{}, err
 	}
-	primaryAccount, err := findPrimaryAccount(state)
+	defer finish()
+	return a.runSyncUnlocked(request)
+}
+
+func (a *App) runSyncUnlocked(request core.SyncRunRequest) (core.DashboardSnapshot, error) {
+	result, err := a.runSyncBatch([]core.SyncRunRequest{request})
 	if err != nil {
 		return core.DashboardSnapshot{}, err
 	}
-
-	startedAt := time.Now()
-	a.emitSyncProgress(game.ID, msgSyncPreparing)
-
-	gateway, err := core.NewSplitCloudflareGateway(a.syncContext(), primaryAccount, storageAccount)
-	var summary core.SyncSummary
-	var anchor core.SyncAnchor
-	if err == nil {
-		conflictChoice := resolveSyncConflictChoice(game, state.Preferences, request.ConflictChoice)
-		summary, anchor, err = a.engine.SyncGameWithGateway(a.syncContext(), state.Device, game, gateway, conflictChoice, func(message string) {
-			a.emitSyncProgress(game.ID, message)
-		})
-	}
-	if err != nil {
-		anchor = game.Anchor
-		summary = core.SyncSummary{
-			Status:   "failed",
-			Message:  err.Error(),
-			SyncedAt: time.Now(),
-		}
-	}
-
-	if summary.SyncedAt.IsZero() {
-		summary.SyncedAt = time.Now()
-	}
-	if updateErr := a.store.UpdateGameSync(game.ID, anchor, summary); updateErr != nil {
-		return core.DashboardSnapshot{}, updateErr
-	}
-
-	endedAt := time.Now()
-	_ = a.store.RecordActivity(core.SyncActivity{
-		ID:         core.NewID(),
-		GameID:     game.ID,
-		GameName:   game.Name,
-		AccountID:  storageAccount.ID,
-		Status:     summary.Status,
-		Message:    summary.Message,
-		Uploaded:   summary.Uploaded,
-		Downloaded: summary.Downloaded,
-		Conflicts:  summary.Conflicts,
-		StartedAt:  startedAt,
-		EndedAt:    &endedAt,
-	})
-
-	a.emitSyncProgress(game.ID, summary.Message)
-	a.queueRemoteCatalogSync("manual sync")
-	return a.snapshot()
+	return result.Snapshot, nil
 }
 
 func (a *App) lockGameSync(gameID string) func() {
@@ -1337,6 +1784,11 @@ func (a *App) PrepareGameLaunch(gameID string, conflictChoice string) (map[strin
 	if err := a.ensureReady(); err != nil {
 		return nil, err
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
 
 	gameID = strings.TrimSpace(gameID)
 	if gameID == "" {
@@ -1376,7 +1828,7 @@ func (a *App) PrepareGameLaunch(gameID string, conflictChoice string) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	gateway, err := core.NewSplitCloudflareGateway(a.syncContext(), primaryAccount, storageAccount)
+	gateway, err := newSplitStorageGateway(a.syncContext(), primaryAccount, storageAccount)
 	if err != nil {
 		return nil, err
 	}
@@ -1407,7 +1859,7 @@ func (a *App) PrepareGameLaunch(gameID string, conflictChoice string) (map[strin
 		inspection.Status == "merge_needed" ||
 		inspection.Status == "conflict" ||
 		strings.TrimSpace(conflictChoice) != "" {
-		snapshot, syncErr := a.RunSync(core.SyncRunRequest{
+		snapshot, syncErr := a.runSyncUnlocked(core.SyncRunRequest{
 			GameID:         gameID,
 			ConflictChoice: resolvedConflictChoice,
 		})
@@ -1564,7 +2016,7 @@ func inferCoverSource(coverPath string, coverSourceType string, coverSource stri
 }
 
 func (a *App) ensureCoverCached(game core.Game, existing *core.Game) (string, string, error) {
-	if !coverSourceChanged(game, existing) {
+	if !coverSourceChanged(game, existing) && !strings.EqualFold(strings.TrimSpace(game.CoverSourceType), coverSourceLocalFile) {
 		if cachedPath := a.locateCoverCache(game); cachedPath != "" {
 			mimeType, err := detectFileMimeType(cachedPath)
 			if err == nil {
@@ -1599,6 +2051,12 @@ func (a *App) ensureCoverCached(game core.Game, existing *core.Game) (string, st
 		if _, err := os.Stat(source); err == nil {
 			return a.copyLocalCoverToCache(game.ID, source)
 		}
+		if cachedPath := a.locateCoverCache(game); cachedPath != "" {
+			mimeType, err := detectFileMimeType(cachedPath)
+			if err == nil {
+				return cachedPath, mimeType, nil
+			}
+		}
 		if accountID, objectKey := coverCloudLocation(game); accountID != "" && objectKey != "" {
 			return a.downloadCloudCoverToCache(game.ID, accountID, objectKey)
 		}
@@ -1622,6 +2080,24 @@ func hasActiveLaunchRestoreOverride(game core.Game, deviceID string) bool {
 	return strings.TrimSpace(override.SourceDeviceID) == strings.TrimSpace(deviceID)
 }
 
+// backupRecordIsNewer 判断 candidate 是否比 current 更新：
+// 优先比较存档清单世代 SourceManifestGeneratedAt（不受跨设备墙钟偏差影响），仅在双方都缺失时退回 CreatedAt。
+func backupRecordIsNewer(candidate core.BackupRecord, current core.BackupRecord) bool {
+	switch {
+	case !candidate.SourceManifestGeneratedAt.IsZero() && !current.SourceManifestGeneratedAt.IsZero():
+		if !candidate.SourceManifestGeneratedAt.Equal(current.SourceManifestGeneratedAt) {
+			return candidate.SourceManifestGeneratedAt.After(current.SourceManifestGeneratedAt)
+		}
+		return candidate.CreatedAt.After(current.CreatedAt)
+	case !candidate.SourceManifestGeneratedAt.IsZero():
+		return true
+	case !current.SourceManifestGeneratedAt.IsZero():
+		return false
+	default:
+		return candidate.CreatedAt.After(current.CreatedAt)
+	}
+}
+
 func latestReadyAutoBackupRecord(game core.Game) (core.BackupRecord, bool) {
 	var latest core.BackupRecord
 	found := false
@@ -1633,7 +2109,7 @@ func latestReadyAutoBackupRecord(game core.Game) (core.BackupRecord, bool) {
 		if record.DeletedAt != nil || record.PendingDelete || record.Status != core.BackupStatusReady {
 			continue
 		}
-		if !found || record.CreatedAt.After(latest.CreatedAt) {
+		if !found || backupRecordIsNewer(record, latest) {
 			latest = record
 			found = true
 		}
@@ -1661,19 +2137,50 @@ func (a *App) prepareLatestAutoBackupForLaunch(game core.Game) (string, *core.Da
 	if !ok {
 		return "", nil, nil
 	}
+	// 与同步/其它存档目录写入方互斥（M7）；本函数返回后 PrepareGameLaunch 才会调 RunSync，不会自死锁
+	unlock := a.lockGameSync(game.ID)
+	defer unlock()
 	if a.currentManifestMatchesLatestAuto(game, record) {
 		return "当前本地存档已是最新自动存档，正在启动游戏。", nil, nil
 	}
+	// 门2：候选备份必须能证明比 anchor 更新——用清单世代而非墙钟 CreatedAt；
+	// 缺失该字段的旧记录无法证明更新，不自动恢复
+	if record.SourceManifestGeneratedAt.IsZero() ||
+		!record.SourceManifestGeneratedAt.After(game.Anchor.LastManifest.GeneratedAt) {
+		return "", nil, nil
+	}
+	// 门1：本地自 anchor 后无改动才允许自动快进恢复；否则跳过预恢复，
+	// 交由后续 InspectLaunchSync 正常冲突流程让用户选择
+	anchorHash := strings.TrimSpace(game.Anchor.LastManifest.Hash)
+	if anchorHash == "" {
+		return "", nil, nil
+	}
+	localManifest, manifestErr := core.BuildLocalManifest(game.SavePath, game.Sync.IncludePatterns, game.Sync.ExcludePatterns)
+	if manifestErr != nil || strings.TrimSpace(localManifest.Hash) != anchorHash {
+		return "", nil, nil
+	}
 	gateways, gatewayErr := a.getBackupGateways(a.ctx, game)
 	if gatewayErr != nil {
-		if localPath := filepath.Join(a.store.DataDir(), "backups", game.ID, record.Filename); strings.TrimSpace(localPath) != "" {
+		if localPath := core.ExistingBackupLocalPathForRecord(a.store.DataDir(), game.ID, record); strings.TrimSpace(localPath) != "" {
 			if _, statErr := os.Stat(localPath); statErr != nil {
 				return "", nil, gatewayErr
 			}
 		}
 	}
 	bm := core.NewBackupManager(a.engine)
-	if err := bm.RestoreBackup(a.ctx, game, record.Filename, a.store.DataDir(), gateways); err != nil {
+	// 门3：恢复前先对当前存档目录做安全备份（manual 类型，不参与 auto 清理），失败则中止恢复
+	safetyName := "预恢复安全备份 " + time.Now().Format("2006-01-02 15:04:05")
+	safetyBackup, safetyErr := bm.CreateBackup(a.ctx, game, "manual", safetyName, a.store.Snapshot().Device.ID, a.store.DataDir(), nil)
+	if safetyErr != nil {
+		return "", nil, fmt.Errorf("创建预恢复安全备份失败，已中止自动恢复: %w", safetyErr)
+	}
+	if safetyBackup != nil {
+		// 记录进注册表以便用户可见/可回滚；失败不阻断（zip 已落盘）
+		if _, persistErr := a.persistBackupRecord(game, *safetyBackup, "", core.BackupStatusReady, ""); persistErr != nil {
+			wailsruntime.LogErrorf(a.ctx, "persist pre-restore safety backup record failed: %v", persistErr)
+		}
+	}
+	if err := bm.RestoreBackup(a.ctx, game, core.BackupRecordID(record), a.store.DataDir(), gateways); err != nil {
 		return "", nil, fmt.Errorf("restore latest auto backup before launch: %w", err)
 	}
 	snapshot, err := a.snapshot()
@@ -1696,12 +2203,18 @@ func coverSourceChanged(game core.Game, existing *core.Game) bool {
 }
 
 func (a *App) locateCoverCache(game core.Game) string {
-	candidates := make([]string, 0, 2)
+	candidates := make([]string, 0, 3)
+	if _, objectKey := coverCloudLocation(game); objectKey != "" {
+		name := filepath.Base(filepath.FromSlash(objectKey))
+		if name != "." && name != "" {
+			candidates = append(candidates, filepath.Join(a.store.DataDir(), "covers", strings.TrimSpace(game.ID), name))
+		}
+	}
 	if localPath := strings.TrimSpace(game.CoverLocalPath); localPath != "" && a.isManagedCoverCachePath(localPath, strings.TrimSpace(game.ID)) {
 		candidates = append(candidates, localPath)
 	}
 	for _, candidate := range candidates {
-		if candidate == "" {
+		if candidate == "" || strings.EqualFold(filepath.Ext(candidate), ".json") {
 			continue
 		}
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
@@ -1714,6 +2227,9 @@ func (a *App) locateCoverCache(game core.Game) string {
 		return ""
 	}
 	for _, match := range matches {
+		if strings.EqualFold(filepath.Ext(match), ".json") {
+			continue
+		}
 		if info, statErr := os.Stat(match); statErr == nil && !info.IsDir() {
 			return match
 		}
@@ -1807,16 +2323,19 @@ func (a *App) downloadCloudCoverToCache(gameID string, accountID string, objectK
 	if err != nil {
 		return "", "", err
 	}
-	gateway, err := core.NewSplitCloudflareGateway(a.syncContext(), primaryAccount, storageAccount)
+	gateway, err := newSplitStorageGateway(a.syncContext(), primaryAccount, storageAccount)
 	if err != nil {
 		return "", "", err
 	}
-	ext := chooseCoverExtension(objectKey, "")
-	targetPath := a.coverCachePath(gameID, ext)
+	name := filepath.Base(filepath.FromSlash(strings.TrimSpace(objectKey)))
+	if name == "." || name == "" {
+		name = "cover" + chooseCoverExtension(objectKey, "")
+	}
+	targetPath := filepath.Join(a.store.DataDir(), "covers", strings.TrimSpace(gameID), name)
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return "", "", fmt.Errorf(msgCreateCoverCacheDirFailed, err)
 	}
-	if err := gateway.R2.DownloadObjectToFile(a.syncContext(), objectKey, targetPath); err != nil {
+	if err := gateway.Objects.DownloadObjectToFile(a.syncContext(), objectKey, targetPath); err != nil {
 		return "", "", fmt.Errorf(msgDownloadCloudCoverFailed, err)
 	}
 	mimeType, err := detectFileMimeType(targetPath)
@@ -1834,12 +2353,20 @@ func (a *App) writeCoverCache(gameID string, ext string, data []byte) (string, e
 	if err := os.WriteFile(targetPath, data, 0o644); err != nil {
 		return "", fmt.Errorf(msgWriteCoverCacheFailed, err)
 	}
+	targetClean := filepath.Clean(targetPath)
+	targetMetadataClean := filepath.Clean(targetPath + ".json")
 	if matches, err := filepath.Glob(filepath.Join(filepath.Dir(targetPath), "cover.*")); err == nil {
 		for _, match := range matches {
-			if filepath.Clean(match) == filepath.Clean(targetPath) {
+			cleaned := filepath.Clean(match)
+			if cleaned == targetClean || cleaned == targetMetadataClean {
+				continue
+			}
+			if strings.EqualFold(filepath.Ext(match), ".json") {
+				_ = os.Remove(match)
 				continue
 			}
 			_ = os.Remove(match)
+			_ = os.Remove(match + ".json")
 		}
 	}
 	return targetPath, nil
@@ -1863,12 +2390,15 @@ func (a *App) tryUploadCoverToCloud(state core.AppState, game core.Game, localPa
 	if err != nil {
 		return "", "", msgCoverLocalOnlyPrimaryUnavailable
 	}
-	gateway, err := core.NewSplitCloudflareGateway(a.syncContext(), primaryAccount, storageAccount)
+	gateway, err := a.storageGatewayFor(a.syncContext(), primaryAccount, storageAccount)
 	if err != nil {
 		return "", "", fmt.Sprintf(msgCoverLocalOnlyGatewayInitFailed, err)
 	}
-	objectKey := buildCoverObjectKey(game.ID, localPath)
-	if err := gateway.R2.PutObjectFromFile(a.syncContext(), objectKey, localPath); err != nil {
+	objectKey, err := buildCoverObjectKey(game.ID, localPath)
+	if err != nil {
+		return "", "", fmt.Sprintf(msgCoverLocalOnlyUploadFailed, err)
+	}
+	if err := gateway.Objects.PutObjectFromFile(a.syncContext(), objectKey, localPath); err != nil {
 		return "", "", fmt.Sprintf(msgCoverLocalOnlyUploadFailed, err)
 	}
 	return storageAccount.ID, objectKey, ""
@@ -1895,12 +2425,15 @@ func (a *App) prepareGameCover(game core.Game) (string, string, error) {
 		return coverPath, "", nil
 	}
 
-	remoteKey := buildCoverObjectKey(game.ID, coverPath)
-	gateway, err := core.NewSplitCloudflareGateway(a.syncContext(), primaryAccount, storageAccount)
+	remoteKey, err := buildCoverObjectKey(game.ID, coverPath)
 	if err != nil {
 		return "", "", err
 	}
-	if err := gateway.R2.PutObjectFromFile(a.syncContext(), remoteKey, coverPath); err != nil {
+	gateway, err := newSplitStorageGateway(a.syncContext(), primaryAccount, storageAccount)
+	if err != nil {
+		return "", "", err
+	}
+	if err := gateway.Objects.PutObjectFromFile(a.syncContext(), remoteKey, coverPath); err != nil {
 		return "", "", fmt.Errorf(msgUploadBackupFailed, err)
 	}
 
@@ -1938,23 +2471,23 @@ func (a *App) loadCoverReferenceBytes(reference string) ([]byte, error) {
 		return nil, err
 	}
 
-	gateway, err := core.NewSplitCloudflareGateway(a.syncContext(), primaryAccount, storageAccount)
+	gateway, err := newSplitStorageGateway(a.syncContext(), primaryAccount, storageAccount)
 	if err != nil {
 		return nil, err
 	}
-	return gateway.R2.GetObjectBytes(a.syncContext(), objectKey)
+	return gateway.Objects.GetObjectBytes(a.syncContext(), objectKey)
 }
 
 func selectCoverStorageAccount(state core.AppState, game core.Game) (core.CloudflareAccount, bool) {
 	if accountID := strings.TrimSpace(game.StorageAccountID); accountID != "" {
 		for _, account := range state.Accounts {
-			if account.ID == accountID && hasUsableR2Account(account) {
+			if account.ID == accountID && hasUsableObjectAccount(account) {
 				return account, true
 			}
 		}
 	}
 	for _, account := range state.Accounts {
-		if hasUsableR2Account(account) {
+		if hasUsableObjectAccount(account) {
 			return account, true
 		}
 	}
@@ -2005,12 +2538,49 @@ func normalizeLocalCoverPath(path string) string {
 	return path
 }
 
-func buildCoverObjectKey(gameID string, localPath string) string {
-	ext := strings.ToLower(filepath.Ext(localPath))
-	if ext == "" {
-		ext = ".img"
+func buildCoverObjectKey(gameID string, localPath string) (string, error) {
+	hash, err := sha256FileHex(localPath)
+	if err != nil {
+		return "", err
 	}
-	return fmt.Sprintf("covers/%s/cover%s", strings.TrimSpace(gameID), ext)
+	ext := sanitizeCoverExtension(filepath.Ext(localPath))
+	return fmt.Sprintf("covers/%s/%s%s", strings.TrimSpace(gameID), strings.ToLower(hash), ext), nil
+}
+
+type coverCacheMetadata struct {
+	AccountID      string    `json:"accountId"`
+	ObjectKey      string    `json:"objectKey"`
+	SHA256         string    `json:"sha256"`
+	CoverUpdatedAt time.Time `json:"coverUpdatedAt"`
+}
+
+func (a *App) writeCoverCacheMetadata(game core.Game, cachedPath string) error {
+	accountID, objectKey := coverCloudLocation(game)
+	if accountID == "" || objectKey == "" || strings.TrimSpace(cachedPath) == "" {
+		return nil
+	}
+	hash, err := sha256FileHex(cachedPath)
+	if err != nil {
+		return err
+	}
+	content, err := json.Marshal(coverCacheMetadata{AccountID: accountID, ObjectKey: objectKey, SHA256: hash, CoverUpdatedAt: game.CoverUpdatedAt})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(cachedPath+".json", content, 0o644)
+}
+
+func sha256FileHex(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func makeCoverReference(accountID string, objectKey string) string {
@@ -2160,10 +2730,10 @@ func activeBackupRegistry(game *core.Game) []core.BackupRecord {
 	return next
 }
 
-func findBackupRecord(game core.Game, filename string) (core.BackupRecord, int, bool) {
-	filename = strings.TrimSpace(filename)
+func findBackupRecord(game core.Game, backupID string) (core.BackupRecord, int, bool) {
+	backupID = strings.TrimSpace(backupID)
 	for index, record := range game.BackupRegistry {
-		if strings.TrimSpace(record.Filename) == filename {
+		if core.BackupRecordID(record) == backupID {
 			return record, index, true
 		}
 	}
@@ -2175,7 +2745,7 @@ func upsertBackupRecord(game *core.Game, record core.BackupRecord) {
 		return
 	}
 	record = normalizeBackupRecord(record)
-	if existing, index, ok := findBackupRecord(*game, record.Filename); ok {
+	if existing, index, ok := findBackupRecord(*game, core.BackupRecordID(record)); ok {
 		if record.CreatedAt.IsZero() {
 			record.CreatedAt = existing.CreatedAt
 		}
@@ -2186,14 +2756,14 @@ func upsertBackupRecord(game *core.Game, record core.BackupRecord) {
 	rebuildBackupCompatFields(game)
 }
 
-func removeBackupRecord(game *core.Game, filename string) {
+func removeBackupRecord(game *core.Game, backupID string) {
 	if game == nil {
 		return
 	}
-	filename = strings.TrimSpace(filename)
+	backupID = strings.TrimSpace(backupID)
 	next := make([]core.BackupRecord, 0, len(game.BackupRegistry))
 	for _, record := range game.BackupRegistry {
-		if strings.TrimSpace(record.Filename) == filename {
+		if core.BackupRecordID(record) == backupID {
 			continue
 		}
 		next = append(next, record)
@@ -2225,6 +2795,7 @@ func rebuildBackupCompatFields(game *core.Game) {
 
 func normalizeBackupRecord(record core.BackupRecord) core.BackupRecord {
 	record.Filename = strings.TrimSpace(record.Filename)
+	record.ObjectKey = strings.TrimSpace(record.ObjectKey)
 	record.AccountID = strings.TrimSpace(record.AccountID)
 	record.Type = strings.TrimSpace(record.Type)
 	record.Name = strings.TrimSpace(record.Name)
@@ -2446,77 +3017,197 @@ func (a *App) ExportWindowState() (string, error) {
 }
 
 func (a *App) syncRemoteCatalog() error {
-	state := a.store.Snapshot()
-	primary, err := findPrimaryAccount(state)
-	if err != nil {
-		return err
-	}
-	d1 := core.NewD1Client(primary)
+	// pull-merge-repush 收敛环（M5/M11）：D1 行级守卫可能把本次 UPDATE 静默 no-op，
+	// 因此 push 后必须回拉合并确认字段没有丢失，本地仍领先则重推，最多三轮
+	const maxPushRounds = 3
+	for round := 0; round < maxPushRounds; round++ {
+		state := a.store.Snapshot()
+		primary, err := findPrimaryAccount(state)
+		if err != nil {
+			return err
+		}
+		catalogStore, err := a.catalogStoreFor(primary)
+		if err != nil {
+			_ = a.store.SetRecoveryStatus(func(status *core.RecoveryStatus) {
+				status.LastRecoveryError = err.Error()
+			})
+			return err
+		}
 
-	encryptedCredentials := map[string]core.EncryptedCredentialBlob{}
-	if strings.TrimSpace(a.recoveryPassword) != "" {
-		for _, account := range state.Accounts {
-			if account.IsPrimary {
-				continue
+		encryptedCredentials, err := encryptCatalogCredentials(state.Accounts, a.recoveryPassword)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(a.recoveryPassword) == "" {
+			_ = a.store.SetRecoveryStatus(func(status *core.RecoveryStatus) {
+				status.PendingCredentialBackup = len(state.Accounts) > 0
+			})
+		}
+
+		baselineRevision := a.store.LastKnownCatalogRevision()
+		revision, err := catalogStore.SaveRemoteCatalog(a.syncContext(), core.RemoteCatalog{
+			Accounts: state.Accounts,
+			Games:    state.Games,
+			Preferences: &core.RemotePreferences{
+				TagOrder:                 state.Preferences.TagOrder,
+				TagOrderUpdatedAt:        state.Preferences.TagOrderUpdatedAt,
+				PinnedTags:               state.Preferences.PinnedTags,
+				PinnedTagsUpdatedAt:      state.Preferences.PinnedTagsUpdatedAt,
+				SidebarNavOrder:          state.Preferences.SidebarNavOrder,
+				SidebarNavOrderUpdatedAt: state.Preferences.SidebarNavOrderUpdatedAt,
+				FavoriteGames:            state.Preferences.FavoriteGames,
+				FavoriteGamesUpdatedAt:   state.Preferences.FavoriteGamesUpdatedAt,
+				GameOrderUpdatedAt:       state.Preferences.GameOrderUpdatedAt,
+			},
+			Tombstones:        activeCatalogTombstones(state),
+			StorageGeneration: state.StorageGeneration,
+			Handoff:           state.LastStorageHandoff,
+		}, encryptedCredentials, state.Device)
+		if err != nil {
+			_ = a.store.SetRecoveryStatus(func(status *core.RecoveryStatus) {
+				status.LastRecoveryError = err.Error()
+			})
+			return err
+		}
+
+		now := time.Now()
+		if err := a.store.SetRecoveryStatus(func(status *core.RecoveryStatus) {
+			status.RemoteCatalogAvailable = true
+			status.LastCatalogSyncAt = &now
+			status.LastRecoveryError = ""
+			status.PendingCredentialBackup = false
+			if len(state.Accounts) > 1 {
+				status.LastCredentialBackupAt = &now
 			}
-			blob, err := core.EncryptAccountCredentials(account, a.recoveryPassword)
-			if err != nil {
+			if strings.TrimSpace(a.recoveryPassword) != "" {
+				status.HasRecoveryPassword = true
+				status.LastCredentialBackupAt = &now
+			}
+		}); err != nil {
+			return err
+		}
+
+		// M11：读回的 revision 是两次独立请求，可能包含并发他机自增；
+		// 只有恰为 pull 基线 +1 才可作为已拉取水位，否则保守记基线，
+		// 保证下次 pull 不被 revision 相等短路而漏掉他机写入
+		if revision == baselineRevision+1 {
+			if err := a.store.MarkCatalogSynced(revision); err != nil {
 				return err
 			}
-			encryptedCredentials[account.ID] = blob
+		} else {
+			if err := a.store.MarkCatalogSynced(baselineRevision); err != nil {
+				return err
+			}
 		}
-	} else {
-		_ = a.store.SetRecoveryStatus(func(status *core.RecoveryStatus) {
-			status.PendingCredentialBackup = false
-		})
+
+		// push 后回拉合并（M5）：检测被行级守卫吞掉的字段
+		catalog, encrypted, err := catalogStore.LoadRemoteCatalog(a.syncContext())
+		if err != nil {
+			return err
+		}
+		catalog, _ = prepareCatalogForOrdinaryMerge(a.store.Snapshot(), catalog, encrypted, a.recoveryPassword)
+		before := catalogStateFingerprint(a.store.Snapshot())
+		if err := a.store.MergeRemoteCatalog(catalog); err != nil {
+			return err
+		}
+		if catalog.Revision > 0 {
+			if err := a.store.MarkCatalogRevision(catalog.Revision); err != nil {
+				return err
+			}
+		}
+		merged := a.store.Snapshot()
+		if catalogStateFingerprint(merged) != before {
+			a.emitStateUpdated()
+		}
+		if !localCatalogAheadOfRemote(merged, catalog) {
+			return nil
+		}
+		wailsruntime.LogWarningf(a.ctx, "catalog push round %d lost fields to row-level guard, repushing", round+1)
 	}
 
-	revision, err := d1.SaveRemoteCatalog(a.syncContext(), core.RemoteCatalog{
-		Accounts: state.Accounts,
-		Games:    state.Games,
-		Preferences: &core.RemotePreferences{
-			TagOrder:                 state.Preferences.TagOrder,
-			TagOrderUpdatedAt:        state.Preferences.TagOrderUpdatedAt,
-			PinnedTags:               state.Preferences.PinnedTags,
-			PinnedTagsUpdatedAt:      state.Preferences.PinnedTagsUpdatedAt,
-			SidebarNavOrder:          state.Preferences.SidebarNavOrder,
-			SidebarNavOrderUpdatedAt: state.Preferences.SidebarNavOrderUpdatedAt,
-			FavoriteGames:            state.Preferences.FavoriteGames,
-			FavoriteGamesUpdatedAt:   state.Preferences.FavoriteGamesUpdatedAt,
-			GameOrderUpdatedAt:       state.Preferences.GameOrderUpdatedAt,
-		},
-		Tombstones: activeCatalogTombstones(state),
-	}, encryptedCredentials, state.Device)
-	if err != nil {
-		_ = a.store.SetRecoveryStatus(func(status *core.RecoveryStatus) {
-			status.LastRecoveryError = err.Error()
-		})
+	// 多轮仍未收敛：保持 dirty，稍后整轮重试
+	if err := a.store.MarkCatalogDirty(); err != nil {
 		return err
 	}
+	a.scheduleCatalogRetry(30*time.Second, "catalog convergence")
+	wailsruntime.LogWarningf(a.ctx, "catalog did not converge after %d push rounds, retry scheduled", maxPushRounds)
+	return nil
+}
 
-	now := time.Now()
-	if err := a.store.SetRecoveryStatus(func(status *core.RecoveryStatus) {
-		status.RemoteCatalogAvailable = true
-		status.LastCatalogSyncAt = &now
-		status.LastRecoveryError = ""
-		status.PendingCredentialBackup = false
-		if len(state.Accounts) > 1 {
-			status.LastCredentialBackupAt = &now
-		}
-		if strings.TrimSpace(a.recoveryPassword) != "" {
-			status.HasRecoveryPassword = true
-			status.LastCredentialBackupAt = &now
-		}
-	}); err != nil {
-		return err
+// catalogStateFingerprint 序列化目录相关状态用于变更检测（仅在内存中比较，不落盘）
+func catalogStateFingerprint(state core.AppState) string {
+	payload := struct {
+		Games       []core.Game              `json:"games"`
+		Accounts    []core.CloudflareAccount `json:"accounts"`
+		Preferences core.Preferences         `json:"preferences"`
+		Tombstones  core.CatalogTombstones   `json:"tombstones"`
+	}{state.Games, state.Accounts, state.Preferences, state.Tombstones}
+	content, _ := json.Marshal(payload)
+	return string(content)
+}
+
+// localCatalogAheadOfRemote 判断合并后的本地目录是否仍持有远端缺失的更新（M5）：
+// 任一游戏分组时间戳/账号时间戳/偏好列表时间戳晚于远端对应值，或本地条目远端不存在，
+// 都说明本次 push 有字段被 D1 行级整 blob LWW 静默丢弃，需要再推一轮
+func localCatalogAheadOfRemote(state core.AppState, catalog core.RemoteCatalog) bool {
+	remoteGames := make(map[string]core.Game, len(catalog.Games))
+	for _, game := range catalog.Games {
+		remoteGames[game.ID] = game
 	}
-	return a.store.MarkCatalogSynced(revision)
+	for _, game := range state.Games {
+		remote, ok := remoteGames[game.ID]
+		if !ok {
+			return true
+		}
+		fallback := remote.CatalogUpdatedAt
+		if groupTimestampNewer(game.MetadataUpdatedAt, remote.MetadataUpdatedAt, fallback) ||
+			groupTimestampNewer(game.CoverUpdatedAt, remote.CoverUpdatedAt, fallback) ||
+			groupTimestampNewer(game.TagsUpdatedAt, remote.TagsUpdatedAt, fallback) ||
+			groupTimestampNewer(game.SyncConfigUpdatedAt, remote.SyncConfigUpdatedAt, fallback) ||
+			groupTimestampNewer(game.StorageUpdatedAt, remote.StorageUpdatedAt, fallback) ||
+			groupTimestampNewer(game.RuntimeUpdatedAt, remote.RuntimeUpdatedAt, fallback) {
+			return true
+		}
+	}
+	remoteAccounts := make(map[string]core.CloudflareAccount, len(catalog.Accounts))
+	for _, account := range catalog.Accounts {
+		remoteAccounts[account.ID] = account
+	}
+	for _, account := range state.Accounts {
+		remote, ok := remoteAccounts[account.ID]
+		if !ok {
+			return true
+		}
+		if account.CatalogUpdatedAt.After(remote.CatalogUpdatedAt) {
+			return true
+		}
+	}
+	var remotePrefs core.RemotePreferences
+	if catalog.Preferences != nil {
+		remotePrefs = *catalog.Preferences
+	}
+	prefs := state.Preferences
+	return prefs.FavoriteGamesUpdatedAt.After(remotePrefs.FavoriteGamesUpdatedAt) ||
+		prefs.TagOrderUpdatedAt.After(remotePrefs.TagOrderUpdatedAt) ||
+		prefs.PinnedTagsUpdatedAt.After(remotePrefs.PinnedTagsUpdatedAt) ||
+		prefs.SidebarNavOrderUpdatedAt.After(remotePrefs.SidebarNavOrderUpdatedAt) ||
+		prefs.GameOrderUpdatedAt.After(remotePrefs.GameOrderUpdatedAt)
+}
+
+// groupTimestampNewer 远端分组时间戳缺失（旧格式行）时回退整条 CatalogUpdatedAt 比较，
+// 避免对历史数据误判"本地领先"造成无谓重推
+func groupTimestampNewer(localAt time.Time, remoteAt time.Time, remoteFallback time.Time) bool {
+	if remoteAt.IsZero() {
+		remoteAt = remoteFallback
+	}
+	return localAt.After(remoteAt)
 }
 
 func activeCatalogTombstones(state core.AppState) core.CatalogTombstones {
 	gameUpdatedAt := make(map[string]time.Time, len(state.Games))
 	for _, game := range state.Games {
-		gameUpdatedAt[game.ID] = game.CatalogUpdatedAt
+		// 墓碑跳过判定用编辑时间（不含 Runtime，M6）：纯 playtime 写入不得压制墓碑
+		gameUpdatedAt[game.ID] = core.GameEditTimestamp(game)
 	}
 	accountUpdatedAt := make(map[string]time.Time, len(state.Accounts))
 	for _, account := range state.Accounts {
@@ -2581,7 +3272,11 @@ func (a *App) runRemoteCatalogSync(reason string) {
 	a.catalogSyncMu.Unlock()
 	a.emitCatalogSyncStatus("syncing", reason, msgCatalogSyncRunning, nil)
 
-	err := a.syncLatestRemoteCatalog()
+	finishRemote, err := a.beginRemoteOperation()
+	if err == nil {
+		err = a.syncLatestRemoteCatalog()
+		finishRemote()
+	}
 
 	a.catalogSyncMu.Lock()
 	queued := a.catalogSyncQueued
@@ -2630,12 +3325,27 @@ func (a *App) scheduleCatalogRetry(delay time.Duration, reason string) {
 }
 
 func (a *App) syncLatestRemoteCatalog() error {
+	a.syncCoordinatorMu.Lock()
+	defer a.syncCoordinatorMu.Unlock()
 	if err := a.ensureReady(); err != nil {
 		return err
 	}
 	_ = a.store.MarkCatalogSyncAttempt()
-	if err := a.pullRemoteCatalog(); err != nil {
+	changed, err := a.pullRemoteCatalog()
+	if err != nil {
 		return err
+	}
+	if changed {
+		// 后台 pull 合并改变了状态必须通知前端，否则快照陈旧窗口一直持续（M1 放大器）
+		a.emitStateUpdated()
+	}
+	coverResults := a.syncPendingGameCovers()
+	a.logCoverSyncFailures(coverResults)
+	for _, result := range coverResults {
+		if result.Status == "uploaded" {
+			a.emitStateUpdated()
+			break
+		}
 	}
 	return a.syncRemoteCatalog()
 }
@@ -2685,67 +3395,105 @@ func (a *App) emitCatalogSyncStatus(status string, reason string, message string
 	a.emitCatalogSyncEvent(status, payload)
 }
 
-func (a *App) pullRemoteCatalog() error {
+// pullRemoteCatalog 拉取并合并云端目录。返回值表示合并是否实际改变了本地状态，
+// 供调用方决定是否 emit state:updated（B1）。
+func (a *App) pullRemoteCatalog() (bool, error) {
 	state := a.store.Snapshot()
 	if len(state.Accounts) == 0 {
-		return nil
+		return false, nil
 	}
 	primary, err := findPrimaryAccount(state)
 	if err != nil {
-		return nil
+		return false, nil
 	}
-	d1 := core.NewD1Client(primary)
-	remoteRevision, revisionErr := d1.LoadCatalogRevision(a.syncContext())
-	if revisionErr == nil && remoteRevision > 0 && remoteRevision == a.store.LastKnownCatalogRevision() && !a.store.HasPendingCatalogSync() {
-		return nil
-	}
-	catalog, _, err := d1.LoadRemoteCatalog(a.syncContext())
+	catalogStore, err := a.catalogStoreFor(primary)
 	if err != nil {
 		_ = a.store.SetRecoveryStatus(func(status *core.RecoveryStatus) {
 			status.LastRecoveryError = err.Error()
 		})
-		return err
+		return false, err
 	}
+	remoteRevision, revisionErr := catalogStore.LoadCatalogRevision(a.syncContext())
+	if revisionErr == nil && remoteRevision > 0 && remoteRevision == a.store.LastKnownCatalogRevision() && !a.store.HasPendingCatalogSync() {
+		return false, nil
+	}
+	catalog, encrypted, err := catalogStore.LoadRemoteCatalog(a.syncContext())
+	if err != nil {
+		_ = a.store.SetRecoveryStatus(func(status *core.RecoveryStatus) {
+			status.LastRecoveryError = err.Error()
+		})
+		return false, err
+	}
+	catalog, _ = prepareCatalogForOrdinaryMerge(state, catalog, encrypted, a.recoveryPassword)
+	before := catalogStateFingerprint(state)
 	if err := a.store.MergeRemoteCatalog(catalog); err != nil {
-		return err
+		return false, err
 	}
+	changed := catalogStateFingerprint(a.store.Snapshot()) != before
 	if catalog.Revision > 0 {
-		return a.store.MarkCatalogRevision(catalog.Revision)
+		return changed, a.store.MarkCatalogRevision(catalog.Revision)
 	}
-	return nil
+	return changed, nil
 }
 
 func (a *App) pullRemoteCatalogInBackground(reason string) {
 	if err := a.ensureReady(); err != nil {
 		return
 	}
-	if err := a.pullRemoteCatalog(); err != nil {
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		wailsruntime.LogErrorf(a.ctx, "follow storage handoff during %s failed: %v", reason, err)
+		return
+	}
+	defer finish()
+	changed, err := a.pullRemoteCatalog()
+	if err != nil {
 		wailsruntime.LogErrorf(a.ctx, "pull remote catalog in background during %s failed: %v", reason, err)
 		return
 	}
-	a.emitStateUpdated()
+	if changed {
+		if err := a.refreshAllSyncTracking(false); err != nil {
+			wailsruntime.LogErrorf(a.ctx, "refresh save tracking after %s failed: %v", reason, err)
+		}
+		a.emitStateUpdated()
+	}
 }
 
 func (a *App) verifyAccounts(pullCatalogAfter bool) {
 	if err := a.ensureReady(); err != nil {
 		return
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		wailsruntime.LogErrorf(a.ctx, "follow storage handoff before account verification failed: %v", err)
+		return
+	}
+	defer finish()
 	state := a.store.Snapshot()
 	for _, account := range state.Accounts {
-		account.VerificationState = "pending"
-		verifiedAccount, _ := core.VerifyCloudflareAccount(a.syncContext(), account)
-		if verifiedAccount.LastError == "" {
-			verifiedAccount.VerificationState = "valid"
-		} else {
-			verifiedAccount.VerificationState = "invalid"
+		verifiedAccount, _ := verifyStorageAccount(a.syncContext(), account)
+		verificationState := "valid"
+		if verifiedAccount.LastError != "" {
+			verificationState = "invalid"
 		}
-		if _, err := a.store.UpsertAccount(verifiedAccount); err != nil {
+		// 只回写验证结果字段（M2）：验证耗时数秒，期间 pull 合并进来的
+		// 他机账号配置不能被启动时的整体快照冲掉
+		if err := a.store.UpdateAccountVerification(
+			account.ID,
+			verificationState,
+			verifiedAccount.LastVerifiedAt,
+			verifiedAccount.LastError,
+			verifiedAccount.UsageWarning,
+			verifiedAccount.UsedBytes,
+			verifiedAccount.TokenExpiresAt,
+			verifiedAccount.CredentialsBackedUp,
+		); err != nil {
 			wailsruntime.LogErrorf(a.ctx, "store verified account failed: %v", err)
 		}
 	}
 
 	if pullCatalogAfter {
-		if err := a.pullRemoteCatalog(); err != nil {
+		if _, err := a.pullRemoteCatalog(); err != nil {
 			wailsruntime.LogErrorf(a.ctx, "pull remote catalog after account verification failed: %v", err)
 		}
 	}
@@ -2792,6 +3540,15 @@ func (a *App) emitGameEnded(gameID string, duration time.Duration) {
 }
 
 func (a *App) handleGameSessionEnded(gameID string, duration time.Duration) {
+	if err := a.ensureReady(); err != nil {
+		return
+	}
+	finishRemote, remoteErr := a.beginRemoteOperation()
+	if remoteErr != nil {
+		wailsruntime.LogErrorf(a.ctx, "follow storage handoff after game session failed: %v", remoteErr)
+		return
+	}
+	defer finishRemote()
 	gameToUpdate, err := findGame(a.store.Snapshot(), gameID)
 	if err != nil {
 		a.emitGameEnded(gameID, duration)
@@ -2813,7 +3570,10 @@ func (a *App) handleGameSessionEnded(gameID string, duration time.Duration) {
 	a.emitRuntimeEvent("game:backup_starting", gameID)
 
 	bm := core.NewBackupManager(a.engine)
-	backup, err := bm.CreateBackup(context.Background(), gameToUpdate, "auto", msgAutoBackupName, a.store.DataDir(), nil)
+	// 打包存档目录期间与同步/恢复互斥（M7），锁只覆盖读目录的短临界区
+	unlock := a.lockGameSync(gameID)
+	backup, err := bm.CreateBackup(context.Background(), gameToUpdate, "auto", msgAutoBackupName, a.store.Snapshot().Device.ID, a.store.DataDir(), nil)
+	unlock()
 	if err == nil && backup != nil {
 		backup, err = a.queueBackupUploadForGame(gameToUpdate, *backup)
 	}
@@ -2845,6 +3605,35 @@ func findAccount(state core.AppState, accountID string) (core.CloudflareAccount,
 	return core.CloudflareAccount{}, errors.New(msgAccountNotFound)
 }
 
+func resolveStorageSwitchTarget(state core.AppState, request core.StorageSwitchRequest) (core.CloudflareAccount, error) {
+	existingID := strings.TrimSpace(request.ExistingAccountID)
+	hasExisting := existingID != ""
+	hasNew := request.NewAccount != nil
+	if hasExisting == hasNew {
+		return core.CloudflareAccount{}, errors.New(msgStorageSwitchTargetRequired)
+	}
+
+	primary, err := findPrimaryAccount(state)
+	if err != nil {
+		return core.CloudflareAccount{}, err
+	}
+
+	var target core.CloudflareAccount
+	if hasExisting {
+		target, err = findAccount(state, existingID)
+		if err != nil {
+			return core.CloudflareAccount{}, err
+		}
+	} else {
+		target = *request.NewAccount
+		target.ID = ""
+	}
+	if core.AccountProvider(target) == core.AccountProvider(primary) {
+		return core.CloudflareAccount{}, errors.New(msgStorageSwitchSameProvider)
+	}
+	return target, nil
+}
+
 func findGameAndAccount(state core.AppState, gameID string) (core.Game, core.CloudflareAccount, error) {
 	for _, game := range state.Games {
 		if game.ID != gameID {
@@ -2873,28 +3662,73 @@ func findGameAndAccount(state core.AppState, gameID string) (core.Game, core.Clo
 	return core.Game{}, core.CloudflareAccount{}, errors.New(msgGameNotFound)
 }
 
-func hasUsableR2Account(account core.CloudflareAccount) bool {
-	return account.Enabled &&
-		strings.TrimSpace(account.AccountID) != "" &&
+func hasR2Credentials(account core.CloudflareAccount) bool {
+	return strings.TrimSpace(account.AccountID) != "" &&
 		strings.TrimSpace(account.R2Bucket) != "" &&
 		strings.TrimSpace(account.R2AccessKeyID) != "" &&
 		strings.TrimSpace(account.R2SecretAccessKey) != ""
 }
 
+func hasUsableR2Account(account core.CloudflareAccount) bool {
+	return account.Enabled && hasR2Credentials(account)
+}
+
+func hasObjectCredentials(account core.CloudflareAccount) bool {
+	if core.AccountProvider(account) == core.ProviderWebdav {
+		return strings.TrimSpace(account.WebdavURL) != "" &&
+			strings.TrimSpace(account.WebdavUsername) != "" &&
+			strings.TrimSpace(account.WebdavPassword) != ""
+	}
+	return hasR2Credentials(account)
+}
+
+func hasUsableObjectAccount(account core.CloudflareAccount) bool {
+	return account.Enabled && hasObjectCredentials(account)
+}
+
 func appendUniqueAccount(accounts []core.CloudflareAccount, seen map[string]bool, account core.CloudflareAccount) []core.CloudflareAccount {
-	if strings.TrimSpace(account.ID) == "" || seen[account.ID] || !hasUsableR2Account(account) {
+	if strings.TrimSpace(account.ID) == "" || seen[account.ID] || !hasUsableObjectAccount(account) {
 		return accounts
 	}
 	seen[account.ID] = true
 	return append(accounts, account)
 }
 
-func canonicalBackupAccounts(state core.AppState) []core.CloudflareAccount {
+func writableObjectAccounts(state core.AppState) []core.CloudflareAccount {
 	ordered := make([]core.CloudflareAccount, 0, len(state.Accounts))
+	seen := make(map[string]bool, len(state.Accounts))
 	for _, account := range state.Accounts {
-		if !hasUsableR2Account(account) {
+		if account.IsPrimary {
+			ordered = appendUniqueAccount(ordered, seen, account)
+		}
+	}
+	for _, account := range state.Accounts {
+		ordered = appendUniqueAccount(ordered, seen, account)
+	}
+	return ordered
+}
+
+func canonicalBackupAccounts(state core.AppState) []core.CloudflareAccount {
+	return writableObjectAccounts(state)
+}
+
+func referencedBackupAccounts(state core.AppState, game core.Game) []core.CloudflareAccount {
+	ordered := writableObjectAccounts(state)
+	seen := make(map[string]bool, len(state.Accounts))
+	for _, account := range ordered {
+		seen[account.ID] = true
+	}
+	lookup := make(map[string]core.CloudflareAccount, len(state.Accounts))
+	for _, account := range state.Accounts {
+		lookup[account.ID] = account
+	}
+	for _, record := range game.BackupRegistry {
+		accountID := strings.TrimSpace(record.AccountID)
+		account, ok := lookup[accountID]
+		if !ok || accountID == "" || seen[accountID] || !hasObjectCredentials(account) {
 			continue
 		}
+		seen[accountID] = true
 		ordered = append(ordered, account)
 	}
 	return ordered
@@ -2905,15 +3739,15 @@ func orderedBackupAccounts(state core.AppState, game core.Game, backupType strin
 	for _, account := range state.Accounts {
 		lookup[account.ID] = account
 	}
-	canonical := canonicalBackupAccounts(state)
+	canonical := writableObjectAccounts(state)
 	if strings.EqualFold(strings.TrimSpace(backupType), "auto") {
 		if accountID := strings.TrimSpace(game.AutoBackupAccountID); accountID != "" {
-			if account, ok := lookup[accountID]; ok && hasUsableR2Account(account) {
+			if account, ok := lookup[accountID]; ok && hasUsableObjectAccount(account) {
 				return []core.CloudflareAccount{account}
 			}
 		}
 		if accountID := strings.TrimSpace(game.StorageAccountID); accountID != "" {
-			if account, ok := lookup[accountID]; ok && hasUsableR2Account(account) {
+			if account, ok := lookup[accountID]; ok && hasUsableObjectAccount(account) {
 				ordered := []core.CloudflareAccount{account}
 				for _, candidate := range canonical {
 					if candidate.ID == account.ID {
@@ -2929,16 +3763,65 @@ func orderedBackupAccounts(state core.AppState, game core.Game, backupType strin
 	return canonical
 }
 
-func (a *App) getBackupGateways(ctx context.Context, game core.Game) (map[string]*core.CloudflareGateway, error) {
+// newCatalogStore 按账号 provider 构造目录存储：cloudflare→D1，webdav→WebdavClient
+func newCatalogStore(account core.CloudflareAccount) (core.CatalogStore, error) {
+	if core.AccountProvider(account) == core.ProviderWebdav {
+		client, err := core.NewWebdavClient(account)
+		if err != nil {
+			return nil, err
+		}
+		return client, nil
+	}
+	return core.NewD1Client(account), nil
+}
+
+// newObjectStore 按账号 provider 构造对象存储：cloudflare→R2，webdav→WebdavClient
+func newObjectStore(ctx context.Context, account core.CloudflareAccount) (core.ObjectStore, error) {
+	if core.AccountProvider(account) == core.ProviderWebdav {
+		client, err := core.NewWebdavClient(account)
+		if err != nil {
+			return nil, err
+		}
+		return client, nil
+	}
+	return core.NewR2Client(ctx, account)
+}
+
+// newSplitStorageGateway 目录走主账号、对象走存档账号；纯 cloudflare 组合沿用
+// 原 NewSplitCloudflareGateway 的配置完整性校验，混合 provider 时按各自分支构造
+func newSplitStorageGateway(ctx context.Context, metadataAccount core.CloudflareAccount, storageAccount core.CloudflareAccount) (*core.StorageGateway, error) {
+	if core.AccountProvider(metadataAccount) == core.ProviderCloudflare && core.AccountProvider(storageAccount) == core.ProviderCloudflare {
+		return core.NewSplitCloudflareGateway(ctx, metadataAccount, storageAccount)
+	}
+	catalog, err := newCatalogStore(metadataAccount)
+	if err != nil {
+		return nil, err
+	}
+	objects, err := newObjectStore(ctx, storageAccount)
+	if err != nil {
+		return nil, err
+	}
+	return &core.StorageGateway{Catalog: catalog, Objects: objects}, nil
+}
+
+// verifyStorageAccount 按 provider 分支调用对应的账号验证
+func verifyStorageAccount(ctx context.Context, account core.CloudflareAccount) (core.CloudflareAccount, error) {
+	if core.AccountProvider(account) == core.ProviderWebdav {
+		return core.VerifyWebdavAccount(ctx, account)
+	}
+	return core.VerifyCloudflareAccount(ctx, account)
+}
+
+func (a *App) getBackupGateways(ctx context.Context, game core.Game) (map[string]*core.StorageGateway, error) {
 	state := a.store.Snapshot()
 	primaryAccount, err := findPrimaryAccount(state)
 	if err != nil {
 		return nil, err
 	}
-	gateways := make(map[string]*core.CloudflareGateway)
+	gateways := make(map[string]*core.StorageGateway)
 	var failures []string
-	for _, account := range canonicalBackupAccounts(state) {
-		gateway, gatewayErr := core.NewSplitCloudflareGateway(ctx, primaryAccount, account)
+	for _, account := range referencedBackupAccounts(state, game) {
+		gateway, gatewayErr := newSplitStorageGateway(ctx, primaryAccount, account)
 		if gatewayErr != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", account.Name, gatewayErr))
 			continue
@@ -2963,17 +3846,17 @@ func (a *App) selectBackupStorageAccount(ctx context.Context, game core.Game, ba
 	}
 	var failures []string
 	for _, account := range candidates {
-		r2, err := core.NewR2Client(ctx, account)
+		objects, err := newObjectStore(ctx, account)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", account.Name, err))
 			continue
 		}
-		usedBytes, err := r2.FetchAccountUsageBytes(ctx)
+		usedBytes, err := objects.FetchAccountUsageBytes(ctx)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", account.Name, err))
 			continue
 		}
-		if usedBytes+backupSize <= maxUsage {
+		if core.AccountProvider(account) == core.ProviderWebdav || usedBytes+backupSize <= maxUsage {
 			account.UsedBytes = usedBytes
 			return account, nil
 		}
@@ -3017,13 +3900,44 @@ func defaultBackupRecordName(backupType string, requestedName string) string {
 	return "手动存档"
 }
 
+// cleanupOlderAutoBackupArtifacts 在新的 auto 备份进入 ready 后，清理注册表中更旧的
+// auto 记录及其本地 zip；他机产生的更新记录与带删除意图的记录保留（M9）。
+func cleanupOlderAutoBackupArtifacts(game *core.Game, newRecord core.BackupRecord, dataDir string) {
+	if game == nil {
+		return
+	}
+	newBackupID := core.BackupRecordID(newRecord)
+	nextRegistry := make([]core.BackupRecord, 0, len(game.BackupRegistry))
+	for _, existing := range game.BackupRegistry {
+		record := normalizeBackupRecord(existing)
+		removable := strings.EqualFold(record.Type, "auto") &&
+			core.BackupRecordID(record) != newBackupID &&
+			record.SourceDeviceID == newRecord.SourceDeviceID &&
+			record.DeletedAt == nil &&
+			record.Status != core.BackupStatusPendingDelete &&
+			record.Status != core.BackupStatusDeleteFailed &&
+			!backupRecordIsNewer(record, newRecord)
+		if removable {
+			_ = os.Remove(core.BackupLocalPathForRecord(dataDir, game.ID, record))
+			continue
+		}
+		nextRegistry = append(nextRegistry, existing)
+	}
+	game.BackupRegistry = nextRegistry
+	rebuildBackupCompatFields(game)
+}
+
 func (a *App) persistBackupRoute(game core.Game, backup core.Backup, accountID string) error {
 	if strings.TrimSpace(accountID) == "" {
 		return nil
 	}
 	backup.Name = defaultBackupRecordName(backup.Type, backup.Name)
+	if strings.TrimSpace(backup.SourceDeviceID) == "" {
+		backup.SourceDeviceID = strings.TrimSpace(a.store.Snapshot().Device.ID)
+	}
 	record := core.BackupRecord{
 		Filename:                  backup.Filename,
+		ObjectKey:                 strings.TrimSpace(backup.ObjectKey),
 		AccountID:                 accountID,
 		Type:                      backup.Type,
 		Name:                      backup.Name,
@@ -3033,16 +3947,13 @@ func (a *App) persistBackupRoute(game core.Game, backup core.Backup, accountID s
 		SourceManifestHash:        strings.TrimSpace(backup.SourceManifestHash),
 		SourceManifestGeneratedAt: backup.SourceManifestGeneratedAt,
 	}
+	if record.ObjectKey == "" {
+		record.ObjectKey = core.BackupObjectKeyForRecord(game.ID, record)
+	}
 	if backup.Type == "auto" {
 		game.AutoBackupAccountID = accountID
-		nextRegistry := make([]core.BackupRecord, 0, len(game.BackupRegistry))
-		for _, existing := range game.BackupRegistry {
-			if strings.EqualFold(existing.Type, "auto") {
-				continue
-			}
-			nextRegistry = append(nextRegistry, existing)
-		}
-		game.BackupRegistry = nextRegistry
+		// 旧 auto 记录不在此处清除（M9）：仅在新记录 ready 后清理更旧的
+		cleanupOlderAutoBackupArtifacts(&game, record, a.store.DataDir())
 	}
 	upsertBackupRecord(&game, record)
 	if backup.Type != "auto" {
@@ -3069,27 +3980,33 @@ func (a *App) uploadBackupToCloud(ctx context.Context, game core.Game, backup *c
 	if err != nil {
 		return err
 	}
-	gateway, err := core.NewSplitCloudflareGateway(ctx, primaryAccount, account)
+	gateway, err := newSplitStorageGateway(ctx, primaryAccount, account)
 	if err != nil {
 		return err
 	}
-	localPath := filepath.Join(a.store.DataDir(), "backups", game.ID, backup.Filename)
-	remoteKey := fmt.Sprintf("backups/%s/%s", game.ID, backup.Filename)
-	if err := gateway.R2.PutObjectFromFile(ctx, remoteKey, localPath); err != nil {
+	record := core.BackupRecord{Filename: backup.Filename, ObjectKey: backup.ObjectKey, SourceDeviceID: backup.SourceDeviceID}
+	localPath := core.ExistingBackupLocalPathForRecord(a.store.DataDir(), game.ID, record)
+	remoteKey := core.BackupObjectKeyForRecord(game.ID, record)
+	if err := gateway.Objects.PutObjectFromFile(ctx, remoteKey, localPath); err != nil {
 		return fmt.Errorf(msgUploadBackupFailed, err)
 	}
 	if backup.Type == "auto" {
 		bm := core.NewBackupManager(a.engine)
-		bm.CleanupCloudAutoBackups(ctx, gateway, game.ID, backup.Filename)
+		bm.CleanupCloudAutoBackups(ctx, gateway, game.ID, backup.SourceDeviceID, backup.Filename)
 	}
 	backup.StorageAccountID = account.ID
+	backup.ObjectKey = remoteKey
 	return a.persistBackupRoute(game, *backup, account.ID)
 }
 
 func (a *App) persistBackupRecord(game core.Game, backup core.Backup, accountID string, status string, lastError string) (*core.Backup, error) {
 	backup.Name = canonicalBackupRecordName(backup.Type, backup.Name)
+	if strings.TrimSpace(backup.SourceDeviceID) == "" {
+		backup.SourceDeviceID = strings.TrimSpace(a.store.Snapshot().Device.ID)
+	}
 	record := core.BackupRecord{
 		Filename:                  backup.Filename,
+		ObjectKey:                 strings.TrimSpace(backup.ObjectKey),
 		AccountID:                 strings.TrimSpace(accountID),
 		Type:                      backup.Type,
 		Name:                      backup.Name,
@@ -3101,16 +4018,13 @@ func (a *App) persistBackupRecord(game core.Game, backup core.Backup, accountID 
 		Status:                    strings.TrimSpace(status),
 		LastError:                 strings.TrimSpace(lastError),
 	}
+	if record.ObjectKey == "" {
+		record.ObjectKey = core.BackupObjectKeyForRecord(game.ID, record)
+	}
 	if backup.Type == "auto" {
 		game.AutoBackupAccountID = strings.TrimSpace(accountID)
-		nextRegistry := make([]core.BackupRecord, 0, len(game.BackupRegistry))
-		for _, existing := range game.BackupRegistry {
-			if strings.EqualFold(existing.Type, "auto") {
-				continue
-			}
-			nextRegistry = append(nextRegistry, existing)
-		}
-		game.BackupRegistry = nextRegistry
+		// 不清除既有 auto 记录（M9）：上传失败时旧的 ready 记录必须保留，
+		// 更旧记录的清理在上传成功回调里执行
 	}
 	upsertBackupRecord(&game, record)
 	if backup.Type != "auto" && strings.TrimSpace(accountID) != "" {
@@ -3122,6 +4036,9 @@ func (a *App) persistBackupRecord(game core.Game, backup core.Backup, accountID 
 	a.queueRemoteCatalogSync("backup record update")
 	a.emitStateUpdated()
 	backup.StorageAccountID = record.AccountID
+	backup.ID = core.BackupRecordID(record)
+	backup.ObjectKey = record.ObjectKey
+	backup.SourceDeviceID = record.SourceDeviceID
 	backup.Name = record.Name
 	backup.Status = record.Status
 	backup.LastError = record.LastError
@@ -3146,7 +4063,7 @@ func (a *App) queueBackupUploadForGame(game core.Game, backup core.Backup) (*cor
 	a.startBackupUploadWorker()
 	a.enqueueBackupUpload(queuedBackupUpload{
 		GameID:    game.ID,
-		Filename:  backup.Filename,
+		BackupID:  savedBackup.ID,
 		AccountID: account.ID,
 	})
 	return savedBackup, nil
@@ -3178,7 +4095,7 @@ func findGame(state core.AppState, gameID string) (core.Game, error) {
 	return core.Game{}, errors.New(msgGameNotFound)
 }
 
-func (a *App) getGatewayForGame(ctx context.Context, gameID string) (*core.CloudflareGateway, error) {
+func (a *App) getGatewayForGame(ctx context.Context, gameID string) (*core.StorageGateway, error) {
 	state := a.store.Snapshot()
 	_, storageAccount, err := findGameAndAccount(state, gameID)
 	if err != nil {
@@ -3188,7 +4105,7 @@ func (a *App) getGatewayForGame(ctx context.Context, gameID string) (*core.Cloud
 	if err != nil {
 		return nil, err
 	}
-	return core.NewSplitCloudflareGateway(ctx, primaryAccount, storageAccount)
+	return newSplitStorageGateway(ctx, primaryAccount, storageAccount)
 }
 
 func (a *App) LaunchAndMonitorGame(gameID string) error {
@@ -3211,13 +4128,24 @@ func (a *App) LaunchAndMonitorGame(gameID string) error {
 		a.handleGameSessionEnded(gameID, duration)
 	}
 
-	return pm.LaunchAndMonitor(a.ctx, game.InstallPath, onStart, onEnd)
+	// 60 秒内未识别到游戏进程：不记时长、不做会话结束自动备份，只通知前端
+	onMiss := func() {
+		wailsruntime.LogWarningf(a.ctx, "game %s process not identified within monitor window; skip session-end backup and playtime", gameID)
+		a.emitRuntimeEvent("game:monitor_timeout", map[string]string{"gameId": gameID})
+	}
+
+	return pm.LaunchAndMonitor(a.ctx, game.InstallPath, onStart, onEnd, onMiss)
 }
 
 func (a *App) GetGameBackups(gameID string) (core.BackupListResult, error) {
 	if err := a.ensureReady(); err != nil {
 		return core.BackupListResult{}, err
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return core.BackupListResult{}, err
+	}
+	defer finish()
 	game, err := findGame(a.store.Snapshot(), gameID)
 	if err != nil {
 		return core.BackupListResult{}, err
@@ -3234,7 +4162,7 @@ func (a *App) GetGameBackups(gameID string) (core.BackupListResult, error) {
 			result.Message = "部分备份桶读取失败，列表可能不完整"
 		}
 		if len(result.FailedAccounts) == 0 {
-			for _, account := range canonicalBackupAccounts(a.store.Snapshot()) {
+			for _, account := range referencedBackupAccounts(a.store.Snapshot(), game) {
 				result.FailedAccounts = append(result.FailedAccounts, account.ID)
 			}
 		}
@@ -3252,43 +4180,56 @@ func (a *App) CreateGameBackup(gameID string, backupType string, name string) (*
 	if err := a.ensureReady(); err != nil {
 		return nil, err
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
 	state := a.store.Snapshot()
 	game, err := findGame(state, gameID)
 	if err != nil {
 		return nil, err
 	}
 	bm := core.NewBackupManager(a.engine)
-	backup, err := bm.CreateBackup(a.ctx, game, backupType, name, a.store.DataDir(), nil)
+	backup, err := bm.CreateBackup(a.ctx, game, backupType, name, state.Device.ID, a.store.DataDir(), nil)
 	if err != nil {
 		return nil, err
 	}
 	return a.queueBackupUploadForGame(game, *backup)
 }
 
-func (a *App) RestoreGameBackup(gameID string, filename string) error {
+func (a *App) RestoreGameBackup(gameID string, backupID string) error {
 	if err := a.ensureReady(); err != nil {
 		return err
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return err
+	}
+	defer finish()
 	state := a.store.Snapshot()
 	game, err := findGame(state, gameID)
 	if err != nil {
 		return err
 	}
-	record, _, ok := findBackupRecord(game, filename)
+	record, _, ok := findBackupRecord(game, backupID)
 	if !ok {
-		return fmt.Errorf("backup %s not found", filename)
+		return fmt.Errorf("backup %s not found", backupID)
 	}
 	record = normalizeBackupRecord(record)
 	gateways, gatewayErr := a.getBackupGateways(a.ctx, game)
 	if gatewayErr != nil {
-		if localPath := filepath.Join(a.store.DataDir(), "backups", game.ID, filename); strings.TrimSpace(localPath) != "" {
+		if localPath := core.ExistingBackupLocalPathForRecord(a.store.DataDir(), game.ID, record); strings.TrimSpace(localPath) != "" {
 			if _, statErr := os.Stat(localPath); statErr != nil {
 				return gatewayErr
 			}
 		}
 	}
+	// 覆盖存档目录期间与同步互斥（M7）
+	unlock := a.lockGameSync(gameID)
+	defer unlock()
 	bm := core.NewBackupManager(a.engine)
-	if err := bm.RestoreBackup(a.ctx, game, filename, a.store.DataDir(), gateways); err != nil {
+	if err := bm.RestoreBackup(a.ctx, game, backupID, a.store.DataDir(), gateways); err != nil {
 		return err
 	}
 	game.LaunchRestoreOverride = &core.LaunchRestoreOverride{
@@ -3306,15 +4247,20 @@ func (a *App) RestoreGameBackup(gameID string, filename string) error {
 	return nil
 }
 
-func (a *App) DeleteGameBackup(gameID string, filename string) error {
+func (a *App) DeleteGameBackup(gameID string, backupID string) error {
 	if err := a.ensureReady(); err != nil {
 		return err
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return err
+	}
+	defer finish()
 	game, err := findGame(a.store.Snapshot(), gameID)
 	if err != nil {
 		return err
 	}
-	record, _, ok := findBackupRecord(game, filename)
+	record, _, ok := findBackupRecord(game, backupID)
 	if !ok {
 		return nil
 	}
@@ -3334,7 +4280,7 @@ func (a *App) DeleteGameBackup(gameID string, filename string) error {
 	a.queueRemoteCatalogSync("backup delete queued")
 	a.emitStateUpdated()
 	a.startBackupDeleteWorker()
-	a.enqueueBackupDelete(queuedBackupDelete{GameID: gameID, Filename: filename})
+	a.enqueueBackupDelete(queuedBackupDelete{GameID: gameID, BackupID: backupID})
 	return nil
 }
 
@@ -3371,6 +4317,11 @@ func (a *App) ImportAppBackup() error {
 	if err := a.ensureReady(); err != nil {
 		return err
 	}
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		return err
+	}
+	defer finish()
 
 	filePath, err := wailsruntime.OpenFileDialog(a.ctx, wailsruntime.OpenDialogOptions{
 		Title: titleChooseBackupFile,

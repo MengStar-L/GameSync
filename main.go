@@ -28,7 +28,8 @@ func main() {
 		MinHeight:         780,
 		StartHidden:       true,
 		HideWindowOnClose: true,
-		BackgroundColour:  &options.RGBA{R: 238, G: 242, B: 247, A: 255},
+		Frameless:         true,
+		BackgroundColour:  &options.RGBA{R: 247, G: 244, B: 238, A: 255},
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

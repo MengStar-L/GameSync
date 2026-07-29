@@ -1,0 +1,376 @@
+/* ============================================================
+   chrome.css —— 顶部带：品牌 / 横向导航 / 搜索 / 同步 / 窗控
+   兼作无边框窗口标题栏（--wails-draggable）
+   ============================================================ */
+
+.chrome {
+  position: relative;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: var(--chrome-height);
+  flex: 0 0 var(--chrome-height);
+  padding-left: 18px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--paper) 82%, transparent);
+  backdrop-filter: blur(10px);
+  user-select: none;
+  --wails-draggable: drag;
+}
+
+/* ---------- 品牌 ---------- */
+
+.chrome-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  pointer-events: none;
+}
+
+.chrome-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 27px;
+  height: 27px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--paper);
+  box-shadow: var(--shadow-press-active);
+}
+
+.chrome-mark svg {
+  width: 16px;
+  height: 16px;
+}
+
+.chrome-wordmark {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+}
+
+/* ---------- 导航页签（下划线墨条滑动跟随） ---------- */
+
+.chrome-nav {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  gap: 2px;
+  --wails-draggable: no-drag;
+}
+
+.chrome-tab {
+  position: relative;
+  padding: 0 14px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+  transition: color var(--t-fast) var(--ease);
+}
+
+.chrome-tab:hover {
+  color: var(--ink);
+}
+
+.chrome-tab.active {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* 滑动墨条：main.js 测量 active 页签后设置 left/width */
+.chrome-tab-ink {
+  position: absolute;
+  bottom: -1px;
+  height: 2px;
+  background: var(--vermilion);
+  border-radius: 2px;
+  transition:
+    left var(--t-med) var(--ease),
+    width var(--t-med) var(--ease);
+}
+
+.chrome-gap {
+  flex: 1;
+  align-self: stretch;
+}
+
+/* ---------- 工具区 ---------- */
+
+.chrome-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  --wails-draggable: no-drag;
+}
+
+.chrome-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 210px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  background: var(--card);
+  transition:
+    width var(--t-med) var(--ease),
+    border-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease);
+}
+
+.chrome-search:focus-within {
+  width: 280px;
+  border-color: var(--vermilion-line);
+  box-shadow: 0 0 0 3px var(--vermilion-soft);
+}
+
+.chrome-search svg {
+  width: 14px;
+  height: 14px;
+  color: var(--ink-3);
+  flex: none;
+}
+
+.chrome-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  outline: none;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.chrome-search input::placeholder {
+  color: var(--ink-3);
+}
+
+.chrome-search-clear {
+  display: none;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  line-height: 1;
+  font-size: 13px;
+  color: var(--ink-2);
+  background: var(--paper-2);
+}
+
+.chrome-search.has-value .chrome-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chrome-search-clear:hover {
+  color: var(--ink);
+  background: var(--line);
+}
+
+/* 同步全部 */
+.chrome-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  background: var(--card);
+  font-size: 13px;
+  color: var(--ink);
+  box-shadow: var(--shadow-press-active);
+  transition:
+    transform var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+
+.chrome-sync svg {
+  width: 13px;
+  height: 13px;
+}
+
+.chrome-sync:hover {
+  transform: translateY(-1px);
+  border-color: var(--vermilion-line);
+  box-shadow: var(--shadow-press);
+}
+
+.chrome-sync:active {
+  transform: none;
+  box-shadow: none;
+}
+
+.chrome-sync.busy svg {
+  animation: chrome-spin 0.9s linear infinite;
+}
+
+@keyframes chrome-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 网络/目录同步状态 */
+.chrome-net {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 190px;
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.chrome-net-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: var(--radius-full);
+  background: var(--ink-3);
+  transition: background var(--t-med) var(--ease);
+}
+
+.chrome-net.online .chrome-net-dot {
+  background: var(--sage);
+}
+
+.chrome-net.syncing .chrome-net-dot {
+  background: var(--indigo-ink);
+  animation: net-breathe 1.4s var(--ease) infinite;
+}
+
+.chrome-net.offline .chrome-net-dot {
+  background: var(--crimson);
+}
+
+/* 后端 catalog:sync_state 词表：succeeded 绿、queued 灰蓝 */
+.chrome-net.succeeded .chrome-net-dot {
+  background: var(--sage);
+}
+
+.chrome-net.queued .chrome-net-dot {
+  background: color-mix(in srgb, var(--indigo-ink) 55%, var(--ink-3));
+}
+
+@keyframes net-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
+}
+
+.chrome-net-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 窗控 ---------- */
+
+.window-controls {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  margin-left: 2px;
+  --wails-draggable: no-drag;
+}
+
+.wc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 100%;
+  color: var(--ink-2);
+  transition:
+    background-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+
+.wc-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+.wc-btn:hover {
+  background: rgba(33, 29, 22, 0.07); /* --ink 透明度 */
+  color: var(--ink);
+}
+
+.wc-btn:active svg {
+  transform: scale(0.85);
+}
+
+.wc-close:hover {
+  background: var(--crimson);
+  color: #fff;
+}
+
+.wc-icon-restore {
+  display: none;
+}
+
+body.is-maximized .wc-icon-restore {
+  display: block;
+}
+
+body.is-maximized .wc-icon-max {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .chrome {
+    gap: 8px;
+    min-width: 0;
+    padding-left: 8px;
+    overflow: hidden;
+  }
+
+  .chrome-wordmark,
+  .chrome-gap,
+  .chrome-search,
+  .chrome-net,
+  .window-controls {
+    display: none;
+  }
+
+  .chrome-nav {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .chrome-tab {
+    flex: 1;
+    min-width: 0;
+    padding: 0 5px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .chrome-tools {
+    flex: none;
+    gap: 0;
+  }
+
+  .chrome-sync {
+    justify-content: center;
+    width: 32px;
+    padding: 0;
+  }
+
+  .chrome-sync span {
+    display: none;
+  }
+}

@@ -1,0 +1,308 @@
+/* ============================================================
+   views/settings.css —— 设置页（前缀 .set-）
+   左锚点目录（sticky）+ 右分区纸片卡
+   ============================================================ */
+
+/* ---------- 页头 ---------- */
+
+.set-head {
+  margin-bottom: 26px;
+}
+
+.set-title {
+  font-size: 30px;
+  font-weight: 600;
+}
+
+.set-sub {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+/* ---------- 两栏布局 ---------- */
+
+.set-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 760px);
+  gap: 36px;
+  align-items: start;
+}
+
+/* ---------- 左侧锚点目录（sticky 于 #view 滚动容器） ---------- */
+
+.set-nav {
+  position: sticky;
+  top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+}
+
+.set-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 13px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--ink-2);
+  text-align: left;
+  transition:
+    color var(--t-fast) var(--ease),
+    background-color var(--t-fast) var(--ease),
+    transform var(--t-fast) var(--ease);
+}
+
+.set-nav-item svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--ink-3);
+  transition: color var(--t-fast) var(--ease);
+}
+
+.set-nav-item:hover {
+  color: var(--ink);
+  background: var(--paper-2);
+}
+
+.set-nav-item:hover svg {
+  color: var(--ink-2);
+}
+
+.set-nav-item:active {
+  transform: scale(0.97);
+}
+
+.set-nav-item.active {
+  color: var(--vermilion);
+  font-weight: 600;
+  background: var(--vermilion-soft);
+}
+
+.set-nav-item.active svg {
+  color: var(--vermilion);
+}
+
+/* ---------- 分区 ---------- */
+
+.set-sec {
+  margin-bottom: 30px;
+  scroll-margin-top: 12px; /* scrollIntoView 后与容器顶部留白 */
+}
+
+.set-sec:last-child {
+  margin-bottom: 0;
+}
+
+/* 分区标题：Fraunces + 朱砂短杠装饰 */
+.set-sec-title {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 12px;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.set-sec-title::before {
+  content: "";
+  width: 18px;
+  height: 4px;
+  flex: none;
+  border-radius: var(--radius-full);
+  background: var(--vermilion);
+}
+
+.set-card {
+  padding: 18px 22px 20px;
+}
+
+/* ---------- kv 区与操作行 ---------- */
+
+.set-kvs {
+  margin-bottom: 2px;
+}
+
+.set-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.set-note {
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.8;
+}
+
+.set-skel-line {
+  display: inline-block;
+  width: 96px;
+  height: 13px;
+  vertical-align: middle;
+}
+
+/* ---------- 软件更新 ---------- */
+
+.set-update-avail {
+  margin-top: 16px;
+  padding: 15px 17px;
+  border: 1px dashed var(--vermilion-line);
+  border-radius: var(--radius);
+  background: var(--vermilion-soft);
+  animation: page-in var(--t-slow) var(--ease) backwards;
+}
+
+.set-update-avail-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.set-update-glyph {
+  display: grid;
+  place-content: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border: 1px solid var(--vermilion-line);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--vermilion);
+}
+
+.set-update-glyph svg {
+  width: 17px;
+  height: 17px;
+}
+
+.set-update-ver {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.set-update-date {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.set-update-notes {
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px dashed var(--vermilion-line);
+}
+
+.set-update-note {
+  font-size: 12.5px;
+  color: var(--ink-2);
+  line-height: 1.9;
+}
+
+.set-update-dl {
+  margin-top: 14px;
+}
+
+/* ---------- 同步偏好表单 ---------- */
+
+.set-form-check {
+  padding: 2px 0 16px;
+}
+
+.set-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;
+}
+
+/* 密钥输入：右侧眼睛按钮 */
+.set-secret {
+  position: relative;
+}
+
+.set-secret .input {
+  padding-right: 42px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.set-secret .input::placeholder {
+  font-family: var(--font-body);
+  font-size: 13px;
+}
+
+.set-eye {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  transform: translateY(-50%);
+  border-radius: var(--radius-sm);
+  color: var(--ink-3);
+  transition:
+    color var(--t-fast) var(--ease),
+    background-color var(--t-fast) var(--ease);
+}
+
+.set-eye:hover {
+  color: var(--ink);
+  background: var(--paper-2);
+}
+
+.set-eye svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* ---------- 架构说明 ---------- */
+
+.set-arch-row {
+  display: flex;
+  gap: 13px;
+  padding: 9px 0;
+}
+
+.set-arch-glyph {
+  display: grid;
+  place-content: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--indigo-soft);
+  color: var(--indigo-ink);
+}
+
+.set-arch-glyph svg {
+  width: 17px;
+  height: 17px;
+}
+
+.set-arch-name {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.set-arch-desc {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  line-height: 1.7;
+}
+
+.set-arch-kvs {
+  margin-top: 10px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+}

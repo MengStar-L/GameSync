@@ -111,9 +111,19 @@ func (s *Store) UpsertAccount(account CloudflareAccount) (CloudflareAccount, err
 	account.R2Bucket = strings.TrimSpace(account.R2Bucket)
 	account.R2AccessKeyID = strings.TrimSpace(account.R2AccessKeyID)
 	account.R2SecretAccessKey = strings.TrimSpace(account.R2SecretAccessKey)
+	account.Provider = strings.ToLower(strings.TrimSpace(account.Provider))
+	account.WebdavURL = strings.TrimSpace(account.WebdavURL)
+	account.WebdavUsername = strings.TrimSpace(account.WebdavUsername)
+	account.WebdavPassword = strings.TrimSpace(account.WebdavPassword)
+	account.WebdavRoot = strings.TrimSpace(account.WebdavRoot)
 	account.VerificationState = strings.TrimSpace(account.VerificationState)
 
-	if account.AccountID == "" || account.R2Bucket == "" || account.R2AccessKeyID == "" || account.R2SecretAccessKey == "" {
+	// 按 provider 校验必填项：webdav 三项必填，cloudflare 维持原校验
+	if AccountProvider(account) == ProviderWebdav {
+		if account.WebdavURL == "" || account.WebdavUsername == "" || account.WebdavPassword == "" {
+			return CloudflareAccount{}, errors.New(msgWebdavConfigIncomplete)
+		}
+	} else if account.AccountID == "" || account.R2Bucket == "" || account.R2AccessKeyID == "" || account.R2SecretAccessKey == "" {
 		return CloudflareAccount{}, errors.New("Cloudflare account R2 config is incomplete")
 	}
 
@@ -130,7 +140,7 @@ func (s *Store) UpsertAccount(account CloudflareAccount) (CloudflareAccount, err
 			}
 		}
 	}
-	if account.IsPrimary && (account.APIToken == "" || account.D1DatabaseID == "") {
+	if account.IsPrimary && AccountProvider(account) != ProviderWebdav && (account.APIToken == "" || account.D1DatabaseID == "") {
 		return CloudflareAccount{}, errors.New("primary Cloudflare account D1 config is incomplete")
 	}
 	if account.ID == "" {
@@ -169,6 +179,152 @@ func (s *Store) UpsertAccount(account CloudflareAccount) (CloudflareAccount, err
 
 	return account, nil
 }
+
+// UpdateAccountVerification 只回写账号验证结果字段（M2）。
+// 不整体 Upsert：验证耗时数秒，期间 pull 合并进来的他机配置不能被启动快照冲掉；
+// 且刻意不触碰 CatalogUpdatedAt——验证结果是本机观测值，不是目录编辑。
+func (s *Store) UpdateAccountVerification(accountID string, verificationState string, lastVerifiedAt *time.Time, lastError string, usageWarning string, usedBytes int64, tokenExpiresAt *time.Time, credentialsBackedUp bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return errors.New("account id is empty")
+	}
+	for index := range s.state.Accounts {
+		if s.state.Accounts[index].ID != accountID {
+			continue
+		}
+		account := &s.state.Accounts[index]
+		account.VerificationState = strings.TrimSpace(verificationState)
+		account.LastVerifiedAt = cloneTimePointer(lastVerifiedAt)
+		account.LastError = strings.TrimSpace(lastError)
+		account.UsageWarning = strings.TrimSpace(usageWarning)
+		account.UsedBytes = usedBytes
+		account.TokenExpiresAt = cloneTimePointer(tokenExpiresAt)
+		account.CredentialsBackedUp = credentialsBackedUp
+		return s.saveLocked()
+	}
+	return fmt.Errorf("account %s not found", accountID)
+}
+
+// SwitchPrimaryStorage 原子完成"切换存储方式"的本地状态变更（一次锁内）：
+// 旧账号全部停用并取消主标记（保留记录，CatalogUpdatedAt 正常推进）；新账号生成 id、
+// isPrimary=true、enabled=true、沿用既有命名规则命名；全部游戏改挂新账号 id 并清零
+// 同步锚点（含 PendingRemoteCleanups）、LastSync 置 nil、LaunchRestoreOverride 清空、
+// StorageUpdatedAt 推进。目录标脏由此处一并完成，云端收敛由调用方负责。
+func (s *Store) SwitchPrimaryStorage(account CloudflareAccount) (CloudflareAccount, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureTombstonesLocked()
+
+	account.ID = strings.TrimSpace(account.ID)
+	account.Name = strings.TrimSpace(account.Name)
+	account.AccountID = strings.TrimSpace(account.AccountID)
+	account.APIToken = strings.TrimSpace(account.APIToken)
+	account.D1DatabaseID = strings.TrimSpace(account.D1DatabaseID)
+	account.R2Bucket = strings.TrimSpace(account.R2Bucket)
+	account.R2AccessKeyID = strings.TrimSpace(account.R2AccessKeyID)
+	account.R2SecretAccessKey = strings.TrimSpace(account.R2SecretAccessKey)
+	account.Provider = strings.ToLower(strings.TrimSpace(account.Provider))
+	account.WebdavURL = strings.TrimSpace(account.WebdavURL)
+	account.WebdavUsername = strings.TrimSpace(account.WebdavUsername)
+	account.WebdavPassword = strings.TrimSpace(account.WebdavPassword)
+	account.WebdavRoot = strings.TrimSpace(account.WebdavRoot)
+	account.VerificationState = strings.TrimSpace(account.VerificationState)
+
+	// 新账号即将成为主账号，按主账号标准校验必填项（与 UpsertAccount 同一套规则）
+	if AccountProvider(account) == ProviderWebdav {
+		if account.WebdavURL == "" || account.WebdavUsername == "" || account.WebdavPassword == "" {
+			return CloudflareAccount{}, errors.New(msgWebdavConfigIncomplete)
+		}
+	} else {
+		if account.AccountID == "" || account.R2Bucket == "" || account.R2AccessKeyID == "" || account.R2SecretAccessKey == "" {
+			return CloudflareAccount{}, errors.New("Cloudflare account R2 config is incomplete")
+		}
+		if account.APIToken == "" || account.D1DatabaseID == "" {
+			return CloudflareAccount{}, errors.New("primary Cloudflare account D1 config is incomplete")
+		}
+	}
+
+	now := time.Now()
+
+	// 旧账号全部停用并取消主标记（保留记录）；CatalogUpdatedAt 推进保证 LWW 赢过旧云端目录
+	for index := range s.state.Accounts {
+		if s.state.Accounts[index].ID == account.ID {
+			continue
+		}
+		if s.state.Accounts[index].Enabled || s.state.Accounts[index].IsPrimary {
+			s.state.Accounts[index].Enabled = false
+			s.state.Accounts[index].IsPrimary = false
+			s.state.Accounts[index].CatalogUpdatedAt = now
+		}
+	}
+
+	if account.ID == "" {
+		account.ID = NewID()
+	}
+	account.IsPrimary = true
+	account.Enabled = true
+	if account.VerificationState == "" {
+		account.VerificationState = "pending"
+	}
+	account.CatalogUpdatedAt = now
+
+	replaced := false
+	for index := range s.state.Accounts {
+		if s.state.Accounts[index].ID == account.ID {
+			s.state.Accounts[index] = account
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		s.state.Accounts = append(s.state.Accounts, account)
+	}
+	delete(s.state.Tombstones.Accounts, account.ID)
+
+	// 全部游戏改挂新账号并重置同步锚点：Anchor 整体清零（含 PendingRemoteCleanups）
+	for index := range s.state.Games {
+		game := &s.state.Games[index]
+		game.StorageAccountID = account.ID
+		game.BackupStorageAccountID = account.ID
+		if strings.TrimSpace(game.AutoBackupAccountID) != "" {
+			game.AutoBackupAccountID = account.ID
+		}
+		game.Anchor = SyncAnchor{}
+		game.LastSync = nil
+		game.LaunchRestoreOverride = nil
+		game.StorageUpdatedAt = now
+		game.RuntimeUpdatedAt = now
+		game.CatalogUpdatedAt = maxTimeValue(
+			game.MetadataUpdatedAt,
+			game.CoverUpdatedAt,
+			game.TagsUpdatedAt,
+			game.SyncConfigUpdatedAt,
+			game.StorageUpdatedAt,
+			game.RuntimeUpdatedAt,
+		)
+	}
+
+	s.normalizeAccountsLocked()
+	s.reorderAccountsLocked()
+	s.assignAccountNamesLocked()
+	s.state.CatalogSync.Dirty = true
+	s.state.CatalogSync.LastQueuedAt = &now
+	s.state.CatalogSync.LastError = ""
+
+	if err := s.saveLocked(); err != nil {
+		return CloudflareAccount{}, err
+	}
+	for _, saved := range s.state.Accounts {
+		if saved.ID == account.ID {
+			return saved, nil
+		}
+	}
+	return account, nil
+}
+
 func (s *Store) DeleteAccount(accountID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -345,6 +501,12 @@ func (s *Store) MergeRemoteCatalog(catalog RemoteCatalog) error {
 			current.R2Bucket = firstNonEmpty(remoteAccount.R2Bucket, current.R2Bucket)
 			current.R2AccessKeyID = firstNonEmpty(current.R2AccessKeyID, remoteAccount.R2AccessKeyID)
 			current.R2SecretAccessKey = firstNonEmpty(current.R2SecretAccessKey, remoteAccount.R2SecretAccessKey)
+			// webdav 配置字段远端优先、密钥本地优先，与上方 cloudflare 各字段策略一致
+			current.Provider = firstNonEmpty(remoteAccount.Provider, current.Provider)
+			current.WebdavURL = firstNonEmpty(remoteAccount.WebdavURL, current.WebdavURL)
+			current.WebdavUsername = firstNonEmpty(remoteAccount.WebdavUsername, current.WebdavUsername)
+			current.WebdavRoot = firstNonEmpty(remoteAccount.WebdavRoot, current.WebdavRoot)
+			current.WebdavPassword = firstNonEmpty(current.WebdavPassword, remoteAccount.WebdavPassword)
 			current.IsPrimary = remoteAccount.IsPrimary
 			current.Enabled = remoteAccount.Enabled
 			current.CatalogUpdatedAt = remoteUpdatedAt
@@ -355,7 +517,12 @@ func (s *Store) MergeRemoteCatalog(catalog RemoteCatalog) error {
 			delete(s.state.Tombstones.Accounts, remoteAccount.ID)
 			continue
 		}
-		if remoteAccount.R2AccessKeyID == "" || remoteAccount.R2SecretAccessKey == "" {
+		// 远端目录不含明文密钥：cloudflare 缺 R2 密钥、webdav 缺密码都视为待恢复凭据
+		missingRemoteSecrets := remoteAccount.R2AccessKeyID == "" || remoteAccount.R2SecretAccessKey == ""
+		if AccountProvider(remoteAccount) == ProviderWebdav {
+			missingRemoteSecrets = remoteAccount.WebdavPassword == ""
+		}
+		if missingRemoteSecrets {
 			remoteAccount.APIToken = ""
 			remoteAccount.R2AccessKeyID = ""
 			remoteAccount.R2SecretAccessKey = ""
@@ -387,11 +554,13 @@ func (s *Store) MergeRemoteCatalog(catalog RemoteCatalog) error {
 			continue
 		}
 		remoteUpdatedAt := catalogGameTime(remoteGame)
-		if deletedAt, deleted := s.state.Tombstones.Games[remoteGame.ID]; deleted && !remoteUpdatedAt.After(deletedAt) {
+		// 墓碑放行判定用编辑时间而非 CatalogUpdatedAt：纯 runtime 写入不得穿透墓碑（M6）
+		if deletedAt, deleted := s.state.Tombstones.Games[remoteGame.ID]; deleted && !GameEditTimestamp(remoteGame).After(deletedAt) {
 			continue
 		}
 		remoteGame.InstallPath = ""
 		remoteGame.SavePath = ""
+		remoteGame.CoverLocalPath = ""
 		if current, ok := localGameByID[remoteGame.ID]; ok {
 			remoteGame = mergeGameFields(current, remoteGame)
 		} else {
@@ -402,7 +571,7 @@ func (s *Store) MergeRemoteCatalog(catalog RemoteCatalog) error {
 		delete(s.state.Tombstones.Games, remoteGame.ID)
 	}
 	for _, localGame := range s.state.Games {
-		if !seenGames[localGame.ID] && !tombstoneDeletes(localGame.CatalogUpdatedAt, s.state.Tombstones.Games[localGame.ID]) {
+		if !seenGames[localGame.ID] && !tombstoneDeletes(GameEditTimestamp(localGame), s.state.Tombstones.Games[localGame.ID]) {
 			mergedGames = append(mergedGames, localGame)
 		}
 	}
@@ -484,9 +653,6 @@ func (s *Store) UpsertGame(game Game) (Game, error) {
 	if game.Name == "" {
 		return Game{}, errors.New("娓告垙鍚嶇О涓嶈兘涓虹┖")
 	}
-	if game.SavePath == "" {
-		return Game{}, errors.New("瀛樻。鐩綍涓嶈兘涓虹┖")
-	}
 	if game.ID == "" {
 		game.ID = NewID()
 	}
@@ -521,6 +687,19 @@ func (s *Store) UpsertGame(game Game) (Game, error) {
 	}
 	s.normalizeGameStorageRoutingLocked(&game)
 	now := time.Now()
+	// 该 id 已被墓碑标记且本地列表无此游戏 → 是他机删除后的幽灵，禁止保存复活（M6）
+	if _, deleted := s.state.Tombstones.Games[game.ID]; deleted {
+		exists := false
+		for index := range s.state.Games {
+			if s.state.Games[index].ID == game.ID {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			return Game{}, errors.New("该游戏已在其他设备被删除")
+		}
+	}
 	delete(s.state.Tombstones.Games, game.ID)
 
 	updated := false
@@ -542,6 +721,7 @@ func (s *Store) UpsertGame(game Game) (Game, error) {
 	}
 	if !updated {
 		game.MetadataUpdatedAt = now
+		game.CoverUpdatedAt = now
 		game.TagsUpdatedAt = now
 		game.SyncConfigUpdatedAt = now
 		game.StorageUpdatedAt = now
@@ -648,11 +828,10 @@ func (s *Store) SavePreferences(preferences Preferences) error {
 	if preferences.ConflictPolicy == "" {
 		preferences.ConflictPolicy = "manual"
 	}
-	if !equalStringSlices(s.state.Preferences.FavoriteGames, preferences.FavoriteGames) {
-		preferences.FavoriteGamesUpdatedAt = time.Now()
-	} else if preferences.FavoriteGamesUpdatedAt.IsZero() {
-		preferences.FavoriteGamesUpdatedAt = s.state.Preferences.FavoriteGamesUpdatedAt
-	}
+	now := time.Now()
+	preferences.FavoriteGames, preferences.FavoriteGamesUpdatedAt = resolvePreferenceListField(
+		s.state.Preferences.FavoriteGames, s.state.Preferences.FavoriteGamesUpdatedAt,
+		preferences.FavoriteGames, preferences.FavoriteGamesUpdatedAt, now)
 	if s.state.Preferences.RawgAPIKey != preferences.RawgAPIKey {
 		preferences.RawgAPIKeyUpdatedAt = time.Now()
 	} else if preferences.RawgAPIKeyUpdatedAt.IsZero() {
@@ -663,27 +842,38 @@ func (s *Store) SavePreferences(preferences Preferences) error {
 	} else if preferences.SteamGridDBAPIKeyUpdatedAt.IsZero() {
 		preferences.SteamGridDBAPIKeyUpdatedAt = s.state.Preferences.SteamGridDBAPIKeyUpdatedAt
 	}
-	if !equalStringSlices(s.state.Preferences.TagOrder, preferences.TagOrder) {
-		preferences.TagOrderUpdatedAt = time.Now()
-	} else if preferences.TagOrderUpdatedAt.IsZero() {
-		preferences.TagOrderUpdatedAt = s.state.Preferences.TagOrderUpdatedAt
-	}
-	if !equalStringSlices(s.state.Preferences.PinnedTags, preferences.PinnedTags) {
-		preferences.PinnedTagsUpdatedAt = time.Now()
-	} else if preferences.PinnedTagsUpdatedAt.IsZero() {
-		preferences.PinnedTagsUpdatedAt = s.state.Preferences.PinnedTagsUpdatedAt
-	}
-	if !equalStringSlices(s.state.Preferences.SidebarNavOrder, preferences.SidebarNavOrder) {
-		preferences.SidebarNavOrderUpdatedAt = time.Now()
-	} else if preferences.SidebarNavOrderUpdatedAt.IsZero() {
-		preferences.SidebarNavOrderUpdatedAt = s.state.Preferences.SidebarNavOrderUpdatedAt
-	}
+	preferences.TagOrder, preferences.TagOrderUpdatedAt = resolvePreferenceListField(
+		s.state.Preferences.TagOrder, s.state.Preferences.TagOrderUpdatedAt,
+		preferences.TagOrder, preferences.TagOrderUpdatedAt, now)
+	preferences.PinnedTags, preferences.PinnedTagsUpdatedAt = resolvePreferenceListField(
+		s.state.Preferences.PinnedTags, s.state.Preferences.PinnedTagsUpdatedAt,
+		preferences.PinnedTags, preferences.PinnedTagsUpdatedAt, now)
+	preferences.SidebarNavOrder, preferences.SidebarNavOrderUpdatedAt = resolvePreferenceListField(
+		s.state.Preferences.SidebarNavOrder, s.state.Preferences.SidebarNavOrderUpdatedAt,
+		preferences.SidebarNavOrder, preferences.SidebarNavOrderUpdatedAt, now)
 	if preferences.GameOrderUpdatedAt.IsZero() {
 		preferences.GameOrderUpdatedAt = s.state.Preferences.GameOrderUpdatedAt
 	}
 
 	s.state.Preferences = preferences
 	return s.saveLocked()
+}
+
+// resolvePreferenceListField 偏好列表字段的基线 CAS（M1 后端半区）：
+// incoming 携带的 *UpdatedAt 是客户端组装快照时看到的基线。值不同时，
+// 基线 >= 当前 → 真实新改动，接受并盖 now；基线 < 当前 → 客户端快照陈旧，
+// 保留当前值与时间戳不覆盖。值相同时不回退时间戳（取两侧较大者）。
+func resolvePreferenceListField(currentValue []string, currentAt time.Time, incomingValue []string, incomingAt time.Time, now time.Time) ([]string, time.Time) {
+	if equalStringSlices(currentValue, incomingValue) {
+		if incomingAt.After(currentAt) {
+			return incomingValue, incomingAt
+		}
+		return incomingValue, currentAt
+	}
+	if incomingAt.Before(currentAt) {
+		return append([]string{}, currentValue...), currentAt
+	}
+	return incomingValue, now
 }
 
 func (s *Store) UpdateGameSync(gameID string, anchor SyncAnchor, summary SyncSummary) error {
@@ -702,6 +892,7 @@ func (s *Store) UpdateGameSync(gameID string, anchor SyncAnchor, summary SyncSum
 		s.state.Games[index].RuntimeUpdatedAt = now
 		s.state.Games[index].CatalogUpdatedAt = maxTimeValue(
 			s.state.Games[index].MetadataUpdatedAt,
+			s.state.Games[index].CoverUpdatedAt,
 			s.state.Games[index].TagsUpdatedAt,
 			s.state.Games[index].SyncConfigUpdatedAt,
 			s.state.Games[index].StorageUpdatedAt,
@@ -1131,6 +1322,9 @@ func normalizeGameCatalogTimestamps(game *Game, fallback time.Time) {
 	if game.MetadataUpdatedAt.IsZero() {
 		game.MetadataUpdatedAt = fallback
 	}
+	if game.CoverUpdatedAt.IsZero() {
+		game.CoverUpdatedAt = game.MetadataUpdatedAt
+	}
 	if game.TagsUpdatedAt.IsZero() {
 		game.TagsUpdatedAt = fallback
 	}
@@ -1145,6 +1339,7 @@ func normalizeGameCatalogTimestamps(game *Game, fallback time.Time) {
 	}
 	game.CatalogUpdatedAt = maxTimeValue(
 		game.MetadataUpdatedAt,
+		game.CoverUpdatedAt,
 		game.TagsUpdatedAt,
 		game.SyncConfigUpdatedAt,
 		game.StorageUpdatedAt,
@@ -1155,6 +1350,7 @@ func normalizeGameCatalogTimestamps(game *Game, fallback time.Time) {
 func applyGameChangeTimestamps(next *Game, current Game, now time.Time) {
 	normalizeGameCatalogTimestamps(&current, current.CatalogUpdatedAt)
 	next.MetadataUpdatedAt = current.MetadataUpdatedAt
+	next.CoverUpdatedAt = current.CoverUpdatedAt
 	next.TagsUpdatedAt = current.TagsUpdatedAt
 	next.SyncConfigUpdatedAt = current.SyncConfigUpdatedAt
 	next.StorageUpdatedAt = current.StorageUpdatedAt
@@ -1162,6 +1358,9 @@ func applyGameChangeTimestamps(next *Game, current Game, now time.Time) {
 
 	if gameMetadataChanged(current, *next) {
 		next.MetadataUpdatedAt = now
+	}
+	if gameCoverChanged(current, *next) {
+		next.CoverUpdatedAt = now
 	}
 	if !equalStringSlices(normalizeStringList(current.Tags), normalizeStringList(next.Tags)) {
 		next.TagsUpdatedAt = now
@@ -1186,6 +1385,10 @@ func applyGameChangeTimestamps(next *Game, current Game, now time.Time) {
 func mergeGameFields(local Game, remote Game) Game {
 	localPath := local.InstallPath
 	localSavePath := local.SavePath
+	// 拉取合并路径：远端 RuntimeUpdatedAt 为零（旧格式行清零后未回传）时不得回填成
+	// CatalogUpdatedAt——否则陈旧 PlayTime 伪装成新鲜数据反向覆盖本地游玩记录（M4），
+	// 因此在 normalize 回填前先捕获原始值
+	remoteRuntimeUpdatedAt := remote.RuntimeUpdatedAt
 	normalizeBackupFields(&local)
 	normalizeBackupFields(&remote)
 	normalizeGameCatalogTimestamps(&local, local.CatalogUpdatedAt)
@@ -1195,6 +1398,10 @@ func mergeGameFields(local Game, remote Game) Game {
 	if remote.MetadataUpdatedAt.After(local.MetadataUpdatedAt) {
 		copyGameMetadata(&merged, remote)
 		merged.MetadataUpdatedAt = remote.MetadataUpdatedAt
+	}
+	if remote.CoverUpdatedAt.After(local.CoverUpdatedAt) {
+		copyGameCover(&merged, remote)
+		merged.CoverUpdatedAt = remote.CoverUpdatedAt
 	}
 	if remote.TagsUpdatedAt.After(local.TagsUpdatedAt) {
 		merged.Tags = normalizeStringList(remote.Tags)
@@ -1209,14 +1416,17 @@ func mergeGameFields(local Game, remote Game) Game {
 		merged.AutoBackupAccountID = remote.AutoBackupAccountID
 		merged.BackupStorageAccountID = remote.BackupStorageAccountID
 		merged.BackupLocations = cloneStringMap(remote.BackupLocations)
-		merged.BackupRegistry = cloneBackupRegistry(remote.BackupRegistry)
 		merged.LaunchRestoreOverride = cloneLaunchRestoreOverride(remote.LaunchRestoreOverride)
 		merged.StorageUpdatedAt = remote.StorageUpdatedAt
 	}
-	if remote.RuntimeUpdatedAt.After(local.RuntimeUpdatedAt) {
+	// BackupRegistry 不参与整块 LWW：跨设备并发备份记录必须按 filename 并集合并（M9），
+	// 否则时间戳落后的一方整块被抹除，级联误删对端云端备份
+	merged.BackupRegistry = mergeBackupRegistries(local.BackupRegistry, remote.BackupRegistry)
+	normalizeBackupFields(&merged)
+	if remoteRuntimeUpdatedAt.After(local.RuntimeUpdatedAt) {
 		merged.PlayTime = remote.PlayTime
 		merged.LastPlayed = cloneTimePointer(remote.LastPlayed)
-		merged.RuntimeUpdatedAt = remote.RuntimeUpdatedAt
+		merged.RuntimeUpdatedAt = remoteRuntimeUpdatedAt
 	}
 	merged.InstallPath = localPath
 	merged.SavePath = localSavePath
@@ -1226,13 +1436,6 @@ func mergeGameFields(local Game, remote Game) Game {
 
 func copyGameMetadata(target *Game, source Game) {
 	target.Name = source.Name
-	target.CoverPath = source.CoverPath
-	target.CoverSourceType = source.CoverSourceType
-	target.CoverSource = source.CoverSource
-	target.CoverCloudAccountID = source.CoverCloudAccountID
-	target.CoverCloudKey = source.CoverCloudKey
-	target.CoverMimeType = source.CoverMimeType
-	target.CoverUpdatedAt = source.CoverUpdatedAt
 	target.Description = source.Description
 	target.Released = source.Released
 	target.Rating = source.Rating
@@ -1250,6 +1453,24 @@ func copyGameMetadata(target *Game, source Game) {
 	target.RawgTags = cloneStringSlice(source.RawgTags)
 }
 
+func copyGameCover(target *Game, source Game) {
+	target.CoverPath = source.CoverPath
+	target.CoverSourceType = source.CoverSourceType
+	target.CoverSource = source.CoverSource
+	target.CoverCloudAccountID = source.CoverCloudAccountID
+	target.CoverCloudKey = source.CoverCloudKey
+	target.CoverMimeType = source.CoverMimeType
+}
+
+func gameCoverChanged(left Game, right Game) bool {
+	return strings.TrimSpace(left.CoverPath) != strings.TrimSpace(right.CoverPath) ||
+		strings.TrimSpace(left.CoverSourceType) != strings.TrimSpace(right.CoverSourceType) ||
+		strings.TrimSpace(left.CoverSource) != strings.TrimSpace(right.CoverSource) ||
+		strings.TrimSpace(left.CoverCloudAccountID) != strings.TrimSpace(right.CoverCloudAccountID) ||
+		strings.TrimSpace(left.CoverCloudKey) != strings.TrimSpace(right.CoverCloudKey) ||
+		strings.TrimSpace(left.CoverMimeType) != strings.TrimSpace(right.CoverMimeType)
+}
+
 func gameMetadataChanged(left Game, right Game) bool {
 	leftCopy := metadataComparable(left)
 	rightCopy := metadataComparable(right)
@@ -1260,29 +1481,22 @@ func gameMetadataChanged(left Game, right Game) bool {
 
 func metadataComparable(game Game) map[string]any {
 	return map[string]any{
-		"name":                strings.TrimSpace(game.Name),
-		"coverPath":           strings.TrimSpace(game.CoverPath),
-		"coverSourceType":     strings.TrimSpace(game.CoverSourceType),
-		"coverSource":         strings.TrimSpace(game.CoverSource),
-		"coverCloudAccountId": strings.TrimSpace(game.CoverCloudAccountID),
-		"coverCloudKey":       strings.TrimSpace(game.CoverCloudKey),
-		"coverMimeType":       strings.TrimSpace(game.CoverMimeType),
-		"coverUpdatedAt":      game.CoverUpdatedAt.UTC().Format(time.RFC3339Nano),
-		"description":         strings.TrimSpace(game.Description),
-		"released":            strings.TrimSpace(game.Released),
-		"rating":              game.Rating,
-		"ratingTop":           game.RatingTop,
-		"metacritic":          game.Metacritic,
-		"genres":              normalizeStringList(game.Genres),
-		"platforms":           normalizeStringList(game.Platforms),
-		"isSteam":             game.IsSteam,
-		"developers":          normalizeStringList(game.Developers),
-		"publishers":          normalizeStringList(game.Publishers),
-		"website":             strings.TrimSpace(game.Website),
-		"rawgId":              game.RawgID,
-		"rawgSlug":            strings.TrimSpace(game.RawgSlug),
-		"rawgUrl":             strings.TrimSpace(game.RawgURL),
-		"rawgTags":            normalizeStringList(game.RawgTags),
+		"name":        strings.TrimSpace(game.Name),
+		"description": strings.TrimSpace(game.Description),
+		"released":    strings.TrimSpace(game.Released),
+		"rating":      game.Rating,
+		"ratingTop":   game.RatingTop,
+		"metacritic":  game.Metacritic,
+		"genres":      normalizeStringList(game.Genres),
+		"platforms":   normalizeStringList(game.Platforms),
+		"isSteam":     game.IsSteam,
+		"developers":  normalizeStringList(game.Developers),
+		"publishers":  normalizeStringList(game.Publishers),
+		"website":     strings.TrimSpace(game.Website),
+		"rawgId":      game.RawgID,
+		"rawgSlug":    strings.TrimSpace(game.RawgSlug),
+		"rawgUrl":     strings.TrimSpace(game.RawgURL),
+		"rawgTags":    normalizeStringList(game.RawgTags),
 	}
 }
 
@@ -1326,6 +1540,69 @@ func cloneStringMap(values map[string]string) map[string]string {
 		copy[key] = value
 	}
 	return copy
+}
+
+// mergeBackupRegistries 按 filename 并集合并两侧备份注册表（M9）。
+// 同名记录取“状态更进”的一方：删除意图（DeletedAt/pending_delete）> ready > upload_failed > pending_upload；
+// 同级取 CreatedAt 较新者。
+func mergeBackupRegistries(local []BackupRecord, remote []BackupRecord) []BackupRecord {
+	merged := make([]BackupRecord, 0, len(local)+len(remote))
+	index := make(map[string]int, len(local))
+	for _, record := range normalizedBackupRegistry(local) {
+		index[BackupRecordID(record)] = len(merged)
+		merged = append(merged, record)
+	}
+	for _, record := range normalizedBackupRegistry(remote) {
+		identity := BackupRecordID(record)
+		at, ok := index[identity]
+		if !ok {
+			index[identity] = len(merged)
+			merged = append(merged, record)
+			continue
+		}
+		merged[at] = preferBackupRecord(merged[at], record)
+	}
+	return cloneBackupRegistry(merged)
+}
+
+func BackupRecordID(record BackupRecord) string {
+	filename := strings.TrimSpace(record.Filename)
+	deviceID := strings.TrimSpace(record.SourceDeviceID)
+	if deviceID == "" {
+		return "legacy:" + filename
+	}
+	return deviceID + ":" + filename
+}
+
+func backupRecordStateRank(record BackupRecord) int {
+	if record.DeletedAt != nil {
+		return 5
+	}
+	switch record.Status {
+	case BackupStatusPendingDelete, BackupStatusDeleteFailed:
+		return 4
+	case BackupStatusReady:
+		return 3
+	case BackupStatusUploadFailed:
+		return 2
+	default: // pending_upload 或未知状态
+		return 1
+	}
+}
+
+func preferBackupRecord(left BackupRecord, right BackupRecord) BackupRecord {
+	leftRank := backupRecordStateRank(left)
+	rightRank := backupRecordStateRank(right)
+	if rightRank != leftRank {
+		if rightRank > leftRank {
+			return right
+		}
+		return left
+	}
+	if right.CreatedAt.After(left.CreatedAt) {
+		return right
+	}
+	return left
 }
 
 func cloneBackupRegistry(values []BackupRecord) []BackupRecord {
@@ -1449,6 +1726,7 @@ func normalizedBackupRegistry(records []BackupRecord) []BackupRecord {
 	seen := make(map[string]int, len(records))
 	for _, record := range records {
 		record.Filename = strings.TrimSpace(record.Filename)
+		record.ObjectKey = strings.TrimSpace(record.ObjectKey)
 		record.AccountID = strings.TrimSpace(record.AccountID)
 		record.Type = strings.TrimSpace(record.Type)
 		record.Name = strings.TrimSpace(record.Name)
@@ -1478,11 +1756,12 @@ func normalizedBackupRegistry(records []BackupRecord) []BackupRecord {
 		if record.Status != BackupStatusDeleteFailed {
 			record.LastDeleteError = ""
 		}
-		if index, ok := seen[record.Filename]; ok {
+		identity := BackupRecordID(record)
+		if index, ok := seen[identity]; ok {
 			normalized[index] = record
 			continue
 		}
-		seen[record.Filename] = len(normalized)
+		seen[identity] = len(normalized)
 		normalized = append(normalized, record)
 	}
 	return normalized
@@ -1510,6 +1789,23 @@ func backupTypeFromFilename(filename string) string {
 		return "auto"
 	}
 	return "manual"
+}
+
+// GameEditTimestamp 返回游戏的“编辑时间”：四个编辑组时间戳的最大值，刻意不含 Runtime（M6）。
+// 墓碑判定一律用它——纯 playtime/会话写入抬高的是 RuntimeUpdatedAt，不应复活已删游戏。
+// 四组全零（旧格式数据）时回退 CatalogUpdatedAt 以兼容历史记录。
+func GameEditTimestamp(game Game) time.Time {
+	edit := maxTimeValue(
+		game.MetadataUpdatedAt,
+		game.CoverUpdatedAt,
+		game.TagsUpdatedAt,
+		game.SyncConfigUpdatedAt,
+		game.StorageUpdatedAt,
+	)
+	if edit.IsZero() {
+		return game.CatalogUpdatedAt
+	}
+	return edit
 }
 
 func catalogGameTime(game Game) time.Time {
@@ -1576,6 +1872,11 @@ func accountCatalogChanged(left CloudflareAccount, right CloudflareAccount) bool
 	right.VerificationState = ""
 	left.CredentialsBackedUp = false
 	right.CredentialsBackedUp = false
+	// UsedBytes/TokenExpiresAt 每次验证必变，属验证结果而非目录配置，一并豁免（M2）
+	left.UsedBytes = 0
+	right.UsedBytes = 0
+	left.TokenExpiresAt = nil
+	right.TokenExpiresAt = nil
 	left.CatalogUpdatedAt = time.Time{}
 	right.CatalogUpdatedAt = time.Time{}
 	leftContent, _ := json.Marshal(left)

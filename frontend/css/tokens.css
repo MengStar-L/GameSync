@@ -1,0 +1,97 @@
+/* ============================================================
+   GameSync · Paper Atelier 设计令牌（唯一变量来源）
+   ============================================================ */
+
+@font-face {
+  font-family: "Fraunces";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("../fonts/fraunces-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Fraunces";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("../fonts/fraunces-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+:root {
+  /* ---------- 字体 ---------- */
+  --font-display: "Fraunces", Georgia, "Microsoft YaHei UI", "PingFang SC", serif;
+  --font-body: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", "Helvetica Neue", sans-serif;
+  --font-mono: "Cascadia Code", Consolas, monospace;
+
+  /* ---------- 纸与墨 ---------- */
+  --paper: #f7f4ee;        /* 画布：暖纸 */
+  --paper-2: #efeae1;      /* 凹陷/轨道 */
+  --card: #fffdf9;         /* 纸片卡 */
+  --card-warm: #fbf7ef;    /* 微暖纸片（hero、面板） */
+
+  --ink: #211d16;
+  --ink-2: #6b6355;
+  --ink-3: #a39a89;
+  --ink-invert: #f7f4ee;
+
+  /* 细线与边框（墨色低透明） */
+  --line: rgba(33, 29, 22, 0.16);
+  --line-strong: rgba(33, 29, 22, 0.34);
+  --line-faint: rgba(33, 29, 22, 0.08);
+
+  /* ---------- 主色：朱砂 ---------- */
+  --vermilion: #d9481c;
+  --vermilion-deep: #b83a14;
+  --vermilion-soft: rgba(217, 72, 28, 0.1);
+  --vermilion-line: rgba(217, 72, 28, 0.4);
+
+  /* ---------- 辅助色域 ---------- */
+  --sage: #4c8f68;         /* 成功 */
+  --sage-soft: rgba(76, 143, 104, 0.13);
+  --ochre: #b98212;        /* 警告 */
+  --ochre-soft: rgba(185, 130, 18, 0.14);
+  --crimson: #c23a4b;      /* 错误 */
+  --crimson-soft: rgba(194, 58, 75, 0.12);
+  --indigo-ink: #3d5a92;   /* 信息 / 同步 */
+  --indigo-soft: rgba(61, 90, 146, 0.12);
+
+  /* 色域晕染（背景装饰用原色） */
+  --wash-peach: #f3dcc9;
+  --wash-sage: #dde7da;
+  --wash-lilac: #e6dfee;
+
+  /* ---------- 印刷感阴影（签名效果：硬偏移、零模糊） ---------- */
+  --shadow-press: 4px 4px 0 rgba(33, 29, 22, 0.06);
+  --shadow-press-hover: 6px 6px 0 rgba(33, 29, 22, 0.09);
+  --shadow-press-active: 2px 2px 0 rgba(33, 29, 22, 0.08);
+  --shadow-pop: 10px 10px 0 rgba(33, 29, 22, 0.08);       /* 对话框/抽屉 */
+  --shadow-float: 0 18px 48px rgba(33, 29, 22, 0.18);      /* 遮罩层上的柔影仅此一处 */
+
+  /* ---------- 圆角 ---------- */
+  --radius-sm: 8px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-full: 9999px;
+
+  /* ---------- 动效 ---------- */
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --t-fast: 130ms;
+  --t-med: 220ms;
+  --t-slow: 380ms;
+
+  /* ---------- 布局 ---------- */
+  --chrome-height: 52px;
+  --content-pad: 36px;
+  --content-max: 1520px;
+
+  /* ---------- 纸纹噪点（body 背景叠加用） ---------- */
+  --paper-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+}

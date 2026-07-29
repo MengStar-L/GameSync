@@ -3,550 +3,68 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>GameSync</title>
-  <script type="module" crossorigin src="/assets/index-CJp7x0WE.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-icFL7lCq.css">
+  <title>GameSync</title>
+  <script type="module" crossorigin src="/assets/index-iScOteKq.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-BhrcjciZ.css">
 </head>
-<body class="app-booting">
-  <div id="app">
-    <aside class="icon-sidebar expanded" id="icon-sidebar">
-      <div class="icon-sidebar-top">
-        <button class="icon-nav-btn" id="menu-toggle" data-tooltip="菜单">
-          <span class="icon-nav-icon" data-lucide="menu"></span>
-          <span class="icon-nav-text">菜单</span>
-        </button>
-
-        <div class="sidebar-top-nav" id="sidebar-top-nav"></div>
-      </div>
-
-      <div class="icon-sidebar-bottom">
-        <button class="icon-nav-btn nav-btn" data-page="accounts" data-tooltip="Cloudflare">
-          <span class="icon-nav-icon" data-lucide="cloud"></span>
-          <span class="icon-nav-text">Cloudflare</span>
-        </button>
-        <button class="icon-nav-btn nav-btn" data-page="activities" data-tooltip="同步状态">
-          <span class="icon-nav-icon" data-lucide="activity"></span>
-          <span class="icon-nav-text">同步状态</span>
-        </button>
-        <button class="icon-nav-btn nav-btn" data-page="settings" data-tooltip="设置">
-          <span class="icon-nav-icon" data-lucide="settings"></span>
-          <span class="icon-nav-text">设置</span>
-        </button>
-        <button class="icon-nav-btn" id="sidebar-sync-btn" data-tooltip="同步全部">
-          <span class="icon-nav-icon" data-lucide="refresh-cw"></span>
-          <span class="icon-nav-text">同步全部</span>
-        </button>
-      </div>
-    </aside>
-
-    <main class="main-content">
-      <header class="topbar">
-        <h1 class="topbar-title" id="page-title">全部游戏</h1>
-        <div class="topbar-actions">
-          <div class="search-box" id="search-box">
-            <span class="search-icon" data-lucide="search"></span>
-            <input type="text" class="search-input" id="global-search-input" placeholder="搜索游戏..." />
-            <button class="search-clear" id="search-clear-btn" style="display:none;" aria-label="清空搜索">
-              <span data-lucide="x"></span>
-            </button>
-          </div>
-
-          <div id="network-status" class="network-status" title="同步状态">
-            <span class="status-dot"></span>
-            <span class="status-text" id="network-status-text">检测中</span>
-          </div>
-          <button class="btn btn-secondary" id="topbar-secondary-btn">同步全部</button>
-          <button class="btn btn-primary" id="topbar-primary-btn">添加游戏</button>
-        </div>
-      </header>
-
-      <div class="content-area">
-        <div id="page-all-games" class="page-content">
-          <div class="games-grid" id="games-grid"></div>
-          <div class="empty-state games-empty" id="games-empty-state" style="display:none;"></div>
-        </div>
-
-        <div id="page-favorite-games" class="page-content" style="display:none;">
-          <div class="games-grid" id="favorite-games-grid"></div>
-          <div class="empty-state games-empty" id="favorite-games-empty-state" style="display:none;"></div>
-        </div>
-
-        <div id="page-all-tags" class="page-content" style="display:none;">
-          <div class="tags-grid" id="tags-grid"></div>
-          <div class="empty-state" id="tags-empty-state" style="display:none;"></div>
-        </div>
-
-        <div id="page-accounts" class="page-content" style="display:none;">
-          <div class="accounts-grid" id="accounts-grid"></div>
-          <div class="empty-state accounts-empty" id="accounts-empty-state" style="display:none;"></div>
-        </div>
-
-        <div id="page-activities" class="page-content" style="display:none;">
-          <div class="sync-summary-card" id="sync-summary-card" style="margin-bottom: 24px;"></div>
-          <div class="activity-list" id="activity-list"></div>
-          <div class="empty-state activity-empty" id="activity-empty-state" style="display:none;"></div>
-        </div>
-
-        <div id="page-settings" class="page-content" style="display:none;">
-          <div class="settings-container">
-            <section class="settings-section">
-              <h3 class="settings-section-title">本地路径</h3>
-              <div id="local-settings-list"></div>
-              <div class="settings-inline-actions" style="margin-top:16px; justify-content:flex-start;">
-                <button class="btn btn-secondary" id="open-data-dir-btn">打开数据目录</button>
-              </div>
-            </section>
-
-            <section class="settings-section">
-              <h3 class="settings-section-title">设备信息</h3>
-              <div id="device-info-list"></div>
-            </section>
-
-            <section class="settings-section">
-              <h3 class="settings-section-title">软件更新</h3>
-              <div id="app-update-info"></div>
-              <div class="settings-inline-actions" style="margin-top:12px; justify-content:flex-start;">
-                <button class="btn btn-secondary" id="check-update-btn" type="button"><span data-lucide="refresh-cw"></span> 检查更新</button>
-                <button class="btn btn-primary" id="apply-update-btn" type="button" style="display:none;"><span data-lucide="download"></span> 更新并重启</button>
-              </div>
-              <div class="field-help" id="app-update-status">当前未检查更新。</div>
-            </section>
-
-            <section class="settings-section">
-              <h3 class="settings-section-title">同步偏好</h3>
-              <form id="preferences-form">
-                <div class="form-group">
-                  <label class="checkbox-row">
-                    <input type="checkbox" id="pref-auto-sync" />
-                    <span>启动时自动同步</span>
-                  </label>
-                </div>
-                <div class="form-group">
-                  <label class="form-label" for="pref-startup-mode">启动同步模式</label>
-                  <select class="form-input" id="pref-startup-mode">
-                    <option value="smart">智能判断</option>
-                    <option value="local-first">优先本地</option>
-                    <option value="cloud-first">优先云端</option>
-                  </select>
-                </div>
-                <div class="form-group">
-                  <label class="form-label" for="pref-conflict-policy">冲突策略</label>
-                  <select class="form-input" id="pref-conflict-policy">
-                    <option value="manual">手动选择</option>
-                    <option value="local">默认本地覆盖</option>
-                    <option value="remote">默认云端覆盖</option>
-                  </select>
-                </div>
-                <div class="form-group">
-                  <label class="form-label" for="pref-rawg-api-key">RAWG API Key</label>
-                  <input class="form-input" id="pref-rawg-api-key" type="password" placeholder="如需拉取游戏数据，请填写 API Key" autocomplete="off" />
-                  <div class="field-help">可在 RAWG 开发者后台免费申请，用于解锁游戏详情搜索功能。</div>
-                </div>
-                <div class="form-group">
-                  <label class="form-label" for="pref-sgdb-api-key">SteamGridDB API Key</label>
-                  <input class="form-input" id="pref-sgdb-api-key" type="password" placeholder="如需搜索在线封面，请填写 API Key" autocomplete="off" />
-                  <div class="field-help">用于搜索 SteamGridDB 竖版封面，API Key 可在 SteamGridDB 个人设置页生成。</div>
-                </div>
-                <button type="submit" class="btn btn-primary">保存偏好</button>
-              </form>
-            </section>
-
-            <section class="settings-section">
-              <h3 class="settings-section-title">Cloudflare 架构</h3>
-              <div id="architecture-info"></div>
-            </section>
-
-            <section class="settings-section">
-              <h3 class="settings-section-title">同步概况</h3>
-              <div id="sync-overview-list"></div>
-            </section>
-
-            <section class="settings-section">
-              <h3 class="settings-section-title">备份与恢复</h3>
-              <div class="info-row">
-                <div class="settings-item-label">软件配置备份</div>
-                <div class="info-row-value">将游戏列表、账号、偏好等配置导出为文件，可用于迁移或恢复。</div>
-              </div>
-              <div class="settings-inline-actions" style="margin-top:12px; justify-content:flex-start;">
-                <button class="btn btn-secondary" id="export-app-backup-btn"><span data-lucide="download"></span> 备份软件配置</button>
-                <button class="btn btn-secondary" id="import-app-backup-btn"><span data-lucide="upload"></span> 从备份恢复</button>
-              </div>
-            </section>
-          </div>
-        </div>
-      </div>
-    </main>
-  </div>
-
-  <div class="modal-overlay" id="game-modal">
-    <div class="modal game-editor-modal">
-      <div class="modal-header game-editor-header">
-        <div class="game-editor-header-main">
-          <div class="game-editor-header-copy">
-            <h2 class="modal-title" id="game-modal-title">游戏详情设定</h2>
-          </div>
-          <div class="game-editor-header-stats" id="game-modal-header-stats">
-            <span class="game-editor-header-stat">
-              <span class="game-editor-header-stat-label">总游戏时长</span>
-              <span class="game-editor-header-stat-value" id="game-modal-playtime">--</span>
-            </span>
-            <span class="game-editor-header-stat">
-              <span class="game-editor-header-stat-label">上次游玩</span>
-              <span class="game-editor-header-stat-value" id="game-modal-last-played">--</span>
-            </span>
-          </div>
-          <button class="modal-close" data-close="game-modal" aria-label="关闭">
-            <span data-lucide="x"></span>
-          </button>
-        </div>
-      </div>
-      <form id="game-form" class="game-editor-form" autocomplete="off">
-        <div class="modal-body game-editor-body">
-          <input type="hidden" id="game-id" autocomplete="off" />
-          <div class="game-editor-grid">
-            <aside class="game-editor-sidebar">
-              <div class="game-editor-panel game-editor-cover-panel">
-                <div class="cover-preview" id="cover-preview-box">
-                  <div class="cover-preview-placeholder" id="cover-preview-placeholder">
-                    <span class="cover-preview-placeholder-icon" data-lucide="image"></span>
-                    <div>点击选择封面</div>
-                  </div>
-                  <img id="cover-preview-image" alt="cover" style="display:none;" />
-                </div>
-                <input type="hidden" id="game-cover-path" />
-              </div>
-              <div class="game-editor-panel game-editor-fields">
-                <div class="form-group-inline">
-                <label class="form-label" for="game-name">游戏名称 *</label>
-                <div class="form-input-with-btn">
-                  <input class="form-input" id="game-name" name="game-name" required placeholder="输入游戏名称" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" />
-                  <button type="button" class="btn btn-secondary" id="fetch-rawg-btn">RAWG 资料</button>
-                  <button type="button" class="btn btn-secondary" id="fetch-sgdb-btn">SteamGridDB 封面</button>
-                </div>
-                </div>
-                <div class="game-editor-inline-grid">
-                  <div class="form-group-inline">
-                    <label class="form-label">所属平台</label>
-                    <label class="platform-switch">
-                      <input type="checkbox" id="game-is-steam" name="game-is-steam" />
-                      <div class="platform-switch-slider"></div>
-                      <span class="platform-switch-label"><span data-lucide="gamepad-2" style="width:14px; height:14px;"></span>第三方</span>
-                      <span class="platform-switch-label">
-                        <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="margin-right:2px;"><path d="M11.967 1.635c-5.748 0-10.407 4.66-10.407 10.408 0 4.258 2.56 7.925 6.224 9.569l2.793-4.043c-.046-.226-.076-.456-.076-.695 0-2.062 1.674-3.738 3.738-3.738.56 0 1.085.127 1.564.343l3.66-5.32c-.015-.098-.027-.197-.027-.297 0-1.859 1.507-3.366 3.366-3.366s3.365 1.507 3.365 3.366-1.506 3.365-3.365 3.365c-.714 0-1.378-.225-1.933-.61l-3.565 5.178c.08.318.125.648.125.992 0 2.062-1.674 3.738-3.738 3.738-1.748 0-3.21-1.2-3.618-2.825l-4.475 1.303c .177.067 .364.103 .555.103 1.094 0 1.983-.889 1.983-1.984s-.889-1.983-1.983-1.983c-1.018 0-1.852.766-1.966 1.751l-3.66-1.077c1.376-4.667 5.67-8.118 10.742-8.118 6.182 0 11.2 5.018 11.2 11.2S16.982 22.4 10.8 22.4c-6.183 0-11.2-5.018-11.2-11.2S4.618 0 10.8 0c.394 0 .783.02 1.167.06l-.043 1.575zM22.8 7.37c0-1.428-1.157-2.585-2.586-2.585-1.428 0-2.585 1.157-2.585 2.585 0 1.429 1.157 2.586 2.585 2.586 1.429 0 2.586-1.157 2.586-2.586zm-1.852 0c0-1.024-.83-1.853-1.853-1.853s-1.853.829-1.853 1.853 .83 1.853 1.853 1.853c1.024 0 1.853-.829 1.853-1.853zM14.242 16.924c0 1.636-1.326 2.962-2.962 2.962-1.635 0-2.96-1.326-2.96-2.962 0-1.635 1.325-2.96 2.96-2.96 1.636 0 2.962 1.325 2.962 2.96zm-2.228 0c0-1.23-1-2.23-2.23-2.23-1.231 0-2.23 1-2.23 2.23 0 1.23 1 2.23 2.23 2.23 1.23 0 2.23-1 2.23-2.23z" fill-rule="evenodd" clip-rule="evenodd" /></svg>
-                        Steam
-                      </span>
-                    </label>
-                  </div>
-                </div>
-              </div>
-            </aside>
-
-            <section class="game-editor-main">
-
-              <div class="game-editor-content-grid">
-                <div class="game-editor-main-column">
-                  <div class="game-editor-panel">
-                    <div class="game-editor-section-head">
-                      <label class="form-label">游戏简介</label>
-                      <button type="button" class="btn btn-secondary btn-sm" id="game-description-edit-btn">编辑</button>
-                    </div>
-                    <div id="game-description-read" class="game-description-read">暂无简介。可在右侧使用 RAWG 更新。</div>
-                    <textarea class="form-input game-description-input" id="game-description" name="game-description" placeholder="可以手动输入，或通过 RAWG 自动获取..." rows="8" style="display:none;"></textarea>
-                  </div>
-
-                  <div class="game-editor-panel game-editor-config-panel">
-                    <div class="form-group-inline">
-                      <label class="form-label" for="game-install-path">启动文件</label>
-                      <div class="form-input-with-btn">
-                        <input class="form-input" id="game-install-path" name="game-install-path" placeholder="选择 .exe 或启动文件" autocomplete="off" spellcheck="false" />
-                        <button type="button" class="btn btn-secondary" id="pick-install-path-btn">浏览</button>
-                      </div>
-                    </div>
-                    <div class="form-group-inline">
-                      <label class="form-label" for="game-save-path">存档目录 *</label>
-                      <div class="form-input-with-btn">
-                        <input class="form-input" id="game-save-path" name="game-save-path" required placeholder="选择存档文件夹" autocomplete="off" spellcheck="false" />
-                        <button type="button" class="btn btn-secondary" id="pick-save-path-btn">浏览</button>
-                      </div>
-                    </div>
-                    <div class="form-group-inline">
-                      <label class="form-label" for="game-account-id">存档存储账号</label>
-                      <select class="form-input" id="game-account-id"></select>
-                    </div>
-                    <div class="form-group-inline">
-                      <label class="form-label" for="game-conflict-strategy">冲突策略</label>
-                      <select class="form-input" id="game-conflict-strategy">
-                        <option value="manual">手动选择</option>
-                        <option value="local">优先本地</option>
-                        <option value="remote">优先云端</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="game-editor-panel">
-                  <label class="form-label">游戏标签</label>
-                  <input type="hidden" id="game-tags" />
-                  <div id="game-tags-display" class="game-editor-tags"></div>
-                  <div class="game-editor-tag-row">
-                    <input class="form-input game-editor-tag-input" id="game-tag-custom-input" placeholder="输入自定义标签后回车" />
-                    <button type="button" class="btn btn-secondary btn-sm" id="game-tag-add-btn">添加</button>
-                  </div>
-                  <div id="game-tag-suggestions-group" class="game-editor-tag-suggestions" style="display:none;">
-                    <div class="field-help">RAWG 推荐标签（点击添加/移除）：</div>
-                    <div id="game-tag-suggestions" class="tag-suggestions"></div>
-                  </div>
-                </div>
-              </div>
-            </section>
-          </div>
-        </div>
-        <div class="modal-footer game-editor-footer">
-          <div class="game-editor-footer-actions">
-            <button type="button" class="btn btn-primary" id="modal-launch-btn" style="display:none; gap:6px;"><span data-lucide="play" style="width:16px;height:16px;"></span>启动游戏</button>
-            <button type="button" class="btn btn-secondary" id="modal-manage-backup-btn" style="display:none; gap:6px;"><span data-lucide="archive" style="width:16px;height:16px;"></span>管理存档</button>
-            <div class="game-editor-footer-divider" style="display:none;" id="modal-btn-divider"></div>
-            <button type="button" class="btn btn-secondary" id="modal-sync-btn" style="display:none;">手动同步</button>
-          </div>
-          <div class="game-editor-footer-actions">
-            <button type="button" class="btn btn-secondary" data-close="game-modal">取消</button>
-            <button type="submit" class="btn btn-primary" id="game-save-btn">保存设置</button>
-          </div>
-        </div>
-      </form>
+<body class="booting">
+  <!-- 顶部带：品牌 + 导航 + 搜索 + 窗控（兼作无边框窗口标题栏） -->
+  <header class="chrome" id="chrome">
+    <div class="chrome-brand" id="brand">
+      <span class="chrome-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" x2="10" y1="12" y2="12"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="15" x2="15.01" y1="13" y2="13"/><line x1="18" x2="18.01" y1="11" y2="11"/><rect width="20" height="12" x="2" y="6" rx="6"/></svg>
+      </span>
+      <span class="chrome-wordmark">GameSync</span>
     </div>
-  </div>
 
-  <div class="modal-overlay" id="account-modal">
-    <div class="modal account-modal-dialog">
-      <div class="modal-header account-modal-header">
-        <div class="account-modal-title-block">
-          <div>
-            <h2 class="modal-title" id="account-modal-title">添加 Cloudflare 账号</h2>
-            <div class="account-modal-subtitle">管理 D1 索引与 R2 存档池凭据</div>
-          </div>
-          <div class="account-form-banner">
-            <div class="form-help">
-              第一个凭据固定为主账号，后续自动命名为副账号；其余 ID 与 Access Key 可在 Cloudflare 控制台复制。
-            </div>
-          </div>
-        </div>
-        <button class="modal-close" data-close="account-modal" aria-label="关闭">
-          <span data-lucide="x"></span>
-        </button>
+    <nav class="chrome-nav" id="chrome-nav" aria-label="主导航">
+      <button class="chrome-tab" data-page="library">游戏库</button>
+      <button class="chrome-tab" data-page="tags">标签</button>
+      <button class="chrome-tab" data-page="accounts">云账号</button>
+      <button class="chrome-tab" data-page="activity">动态</button>
+      <button class="chrome-tab" data-page="settings">设置</button>
+      <span class="chrome-tab-ink" id="chrome-tab-ink" aria-hidden="true"></span>
+    </nav>
+
+    <div class="chrome-gap" aria-hidden="true"></div>
+
+    <div class="chrome-tools">
+      <div class="chrome-search" id="chrome-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="text" id="chrome-search-input" placeholder="搜索游戏…" autocomplete="off" spellcheck="false" />
+        <button class="chrome-search-clear" id="chrome-search-clear" aria-label="清空搜索">×</button>
       </div>
-
-      <form id="account-form" autocomplete="off">
-        <div class="modal-body account-modal-body">
-          <input type="hidden" id="account-id" />
-          <div class="form-grid-two account-form-grid">
-            <div class="account-form-section">
-              <div class="account-form-section-title">账号身份</div>
-              <div class="form-group">
-                <label class="form-label">账号名称</label>
-                <div class="account-readonly-field" id="account-name-display">保存后自动生成</div>
-                <input type="hidden" id="account-name" autocomplete="off" />
-                <div class="field-help">系统自动维护，不能手动编辑。</div>
-              </div>
-              <div class="form-group">
-                <label class="form-label">账号角色</label>
-                <input type="checkbox" id="account-is-primary" disabled hidden />
-                <div class="account-readonly-field account-readonly-role">
-                  <span data-lucide="cloud"></span>
-                  <span id="account-role-display">保存后按顺序分配</span>
-                </div>
-                <div class="field-help">主副账号由添加顺序决定。</div>
-              </div>
-              <div class="form-group">
-                <label class="form-label" for="account-account-id">Account ID *</label>
-                <input class="form-input" id="account-account-id" required placeholder="例如：f3c2a1b09d8e4765b4a3928170fedcba" autocomplete="off" />
-                <div class="field-help">在 Cloudflare 账户概览中复制。</div>
-              </div>
-              <div class="form-group account-primary-field" id="account-api-token-group">
-                <label class="form-label" for="account-api-token">API Token *</label>
-                <div class="secret-input">
-                  <input class="form-input" id="account-api-token" type="password" required placeholder="例如：在 Cloudflare 后台创建的 API Token" autocomplete="new-password" />
-                  <button type="button" class="btn btn-ghost btn-icon secret-visibility-toggle" data-action="toggle-secret" data-target="account-api-token" aria-label="显示 API Token" aria-pressed="false">
-                    <span data-lucide="eye"></span>
-                  </button>
-                </div>
-                <div class="field-help">建议只授予当前项目需要的 D1 / R2 权限。</div>
-              </div>
-            </div>
-            <div class="account-form-section">
-              <div class="account-form-section-title">R2 存储</div>
-              <div class="form-group">
-                <label class="form-label" for="account-r2-bucket">R2 Bucket *</label>
-                <input class="form-input" id="account-r2-bucket" required placeholder="例如：gamesync-prod" autocomplete="off" />
-                <div class="field-help">填写 Bucket 名称，不是完整域名。</div>
-              </div>
-              <div class="form-group account-primary-field" id="account-d1-id-group">
-                <label class="form-label" for="account-d1-id">D1 Database ID *</label>
-                <input class="form-input" id="account-d1-id" required placeholder="例如：b2d4a6bc-78ef-4d90-a123-4567bc89def0" autocomplete="off" />
-                <div class="field-help">在 D1 数据库详情页复制。</div>
-              </div>
-              <div class="form-group">
-                <label class="form-label" for="account-r2-key">R2 Access Key ID *</label>
-                <input class="form-input" id="account-r2-key" required placeholder="例如：8f6c2d8a9b1e3f507c6d2a1b8e9f0c3d" autocomplete="off" />
-                <div class="field-help">在 R2 API Tokens / S3 API 凭据中创建。</div>
-              </div>
-              <div class="form-group">
-                <label class="form-label" for="account-r2-secret">R2 Secret Access Key *</label>
-                <div class="secret-input">
-                  <input class="form-input" id="account-r2-secret" type="password" required placeholder="例如：创建 R2 API 凭据时生成的 Secret Key" autocomplete="new-password" />
-                  <button type="button" class="btn btn-ghost btn-icon secret-visibility-toggle" data-action="toggle-secret" data-target="account-r2-secret" aria-label="显示 R2 Secret Access Key" aria-pressed="false">
-                    <span data-lucide="eye"></span>
-                  </button>
-                </div>
-                <div class="field-help">通常只显示一次，创建后立即保存。</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="modal-footer account-modal-footer">
-          <label class="account-enabled-panel checkbox-row">
-            <input type="checkbox" id="account-enabled" checked />
-            <span>启用此账号用于新的同步任务</span>
-          </label>
-          <div class="account-modal-actions">
-            <button type="button" class="btn btn-secondary" data-close="account-modal">取消</button>
-            <button type="submit" class="btn btn-primary">保存账号</button>
-          </div>
-        </div>
-      </form>
-    </div>
-  </div>
-
-  <div class="modal-overlay" id="conflict-modal">
-    <div class="modal" style="width: 460px;">
-      <div class="modal-header">
-        <h2 class="modal-title">检测到同步冲突</h2>
-      </div>
-      <div class="modal-body">
-        <p id="conflict-message" style="color: var(--text-secondary); line-height: 1.7;">检测到本地与云端都发生了修改，请选择保留哪一侧。</p>
-      </div>
-      <div class="modal-footer" style="justify-content:space-between;">
-        <button type="button" class="btn btn-secondary" id="conflict-cancel-btn">取消</button>
-        <div style="display:flex; gap:8px;">
-          <button type="button" class="btn btn-secondary" id="conflict-cloud-btn">保留云端</button>
-          <button type="button" class="btn btn-primary" id="conflict-local-btn">保留本地</button>
-        </div>
+      <button class="chrome-sync" id="chrome-sync-all" title="同步全部游戏">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+        <span>同步</span>
+      </button>
+      <div class="chrome-net" id="chrome-net" title="">
+        <span class="chrome-net-dot"></span>
+        <span class="chrome-net-text" id="chrome-net-text">检测中</span>
       </div>
     </div>
-  </div>
 
-  <div class="modal-overlay" id="rawg-picker-modal">
-    <div class="modal" style="width: 760px; max-height: 84vh;">
-      <div class="modal-header">
-        <h2 class="modal-title">从 RAWG 获取资料</h2>
-        <button class="modal-close" data-close="rawg-picker-modal" aria-label="关闭"><span data-lucide="x"></span></button>
-      </div>
-      <div class="modal-body" style="padding-top:16px; overflow-y:auto;">
-        <div class="form-input-with-btn" style="margin-bottom: 24px;">
-          <input type="text" class="form-input" id="rawg-search-input" placeholder="输入游戏英文或拼音名称..." />
-          <button type="button" class="btn btn-primary" id="rawg-search-btn">搜索</button>
-        </div>
-        <div id="rawg-search-results" style="display:flex; flex-direction:column; gap:16px;"></div>
-      </div>
+    <div class="window-controls">
+      <button class="wc-btn" id="wc-min" aria-label="最小化" title="最小化">
+        <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><line x1="1" y1="6" x2="11" y2="6"/></svg>
+      </button>
+      <button class="wc-btn" id="wc-max" aria-label="最大化" title="最大化">
+        <svg class="wc-icon-max" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.5" y="1.5" width="9" height="9" rx="2"/></svg>
+        <svg class="wc-icon-restore" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.5" y="3.5" width="7" height="7" rx="1.8"/><path d="M4 1.6h4.6A1.8 1.8 0 0 1 10.4 3.4V8"/></svg>
+      </button>
+      <button class="wc-btn wc-close" id="wc-close" aria-label="关闭" title="关闭（最小化到托盘）">
+        <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><line x1="1.5" y1="1.5" x2="10.5" y2="10.5"/><line x1="10.5" y1="1.5" x2="1.5" y2="10.5"/></svg>
+      </button>
     </div>
-  </div>
+  </header>
 
-  <div class="modal-overlay" id="sgdb-picker-modal">
-    <div class="modal" style="width: 980px; max-height: 84vh;">
-      <div class="modal-header">
-        <h2 class="modal-title">从 SteamGridDB 选择封面</h2>
-        <button class="modal-close" data-close="sgdb-picker-modal" aria-label="关闭"><span data-lucide="x"></span></button>
-      </div>
-      <div class="modal-body" style="display:flex; flex-direction:column; gap:16px;">
-        <div class="form-input-with-btn" style="margin-bottom: 24px;">
-          <input type="text" class="form-input" id="sgdb-search-input" placeholder="输入游戏英文名后搜索竖版封面..." />
-          <button type="button" class="btn btn-primary" id="sgdb-search-btn">搜索</button>
-        </div>
-        <div id="sgdb-search-results" style="display:flex; flex-direction:column; gap:16px;"></div>
-      </div>
-    </div>
-  </div>
+  <!-- 视图挂载点：router 负责填充 -->
+  <main id="view" class="view"></main>
 
-  <div class="modal-overlay" id="backup-modal">
-    <div class="modal" style="width: 550px;">
-      <div class="modal-header">
-        <h2 class="modal-title" id="backup-modal-title">存档备份</h2>
-        <button class="modal-close" data-close="backup-modal" aria-label="关闭"><span data-lucide="x"></span></button>
-      </div>
-      <div class="modal-body">
-        <div class="backup-list" id="backup-list-container">
-          <!-- 动态渲染备份列表 -->
-        </div>
-      </div>
-      <div class="modal-footer">
-        <div class="backup-create-row">
-          <input type="text" class="form-input" id="backup-custom-name" placeholder="自定义存档名称（可选）" />
-          <button type="button" class="btn btn-primary" id="backup-create-btn"><span data-lucide="archive"></span> 创建新备份</button>
-        </div>
-      </div>
-    </div>
-  </div>
+  <!-- 全局层根节点：ui.js 使用 -->
+  <div id="layer-toast" class="layer-toast"></div>
+  <div id="layer-overlay" class="layer-overlay"></div>
+  <div id="layer-menu" class="layer-menu"></div>
 
-  <div id="game-context-menu" class="context-menu" style="display:none;">
-    <button class="context-menu-item" data-action="ctx-favorite"><span id="ctx-menu-fav-icon" data-lucide="heart"></span><span id="ctx-menu-fav-text">加入常玩</span></button>
-    <button class="context-menu-item" data-action="ctx-detail"><span data-lucide="info"></span>游戏详情设定</button>
-    <button class="context-menu-item" data-action="ctx-sync"><span data-lucide="refresh-cw"></span>立即同步</button>
-    <div class="context-menu-divider"></div>
-    <button class="context-menu-item context-menu-danger" data-action="ctx-delete"><span data-lucide="trash-2"></span>删除游戏</button>
-  </div>
-
-  <div id="tag-context-menu" class="context-menu" style="display:none;">
-    <button class="context-menu-item" data-action="ctx-pin-tag"><span id="ctx-menu-pin-icon" data-lucide="pin"></span><span id="ctx-menu-pin-text">固定到侧栏</span></button>
-    <button class="context-menu-item" data-action="ctx-view-tag"><span data-lucide="tags"></span>查看此标签</button>
-  </div>
-
-  <!-- 首次启动引导弹窗 -->
-  <div class="confirm-overlay" id="welcome-dialog">
-    <div class="welcome-dialog">
-      <div class="welcome-icon"><span data-lucide="rocket"></span></div>
-      <h2 class="welcome-title">欢迎使用 GameSync</h2>
-      <p class="welcome-desc">检测到这是首次启动，请选择你的方式开始使用。</p>
-      <div class="welcome-options">
-        <button class="welcome-option" id="welcome-restore-btn">
-          <div class="welcome-option-icon"><span data-lucide="upload"></span></div>
-          <div class="welcome-option-text">
-            <div class="welcome-option-title">从备份恢复</div>
-            <div class="welcome-option-desc">导入已有的配置备份文件，快速恢复所有游戏和账号设置</div>
-          </div>
-        </button>
-        <button class="welcome-option" id="welcome-manual-btn">
-          <div class="welcome-option-icon"><span data-lucide="cloud"></span></div>
-          <div class="welcome-option-text">
-            <div class="welcome-option-title">手动配置 Cloudflare</div>
-            <div class="welcome-option-desc">填写 Cloudflare 账号的 D1 / R2 凭据，逐步完成云端存储配置</div>
-          </div>
-        </button>
-        <button class="welcome-option" id="welcome-skip-btn">
-          <div class="welcome-option-icon"><span data-lucide="log-in"></span></div>
-          <div class="welcome-option-text">
-            <div class="welcome-option-title">跳过，稍后设置</div>
-            <div class="welcome-option-desc">直接进入主界面，随时可在账号页面添加配置</div>
-          </div>
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 自定义确认弹窗 -->
-  <div class="confirm-overlay" id="confirm-dialog">
-    <div class="confirm-dialog">
-      <div class="confirm-icon" id="confirm-icon"><span data-lucide="triangle-alert"></span></div>
-      <div class="confirm-message" id="confirm-message">确认操作？</div>
-      <div class="confirm-actions">
-        <button class="btn btn-secondary" id="confirm-cancel-btn">取消</button>
-        <button class="btn btn-primary" id="confirm-ok-btn">确定</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="toast-container" id="toast-container"></div>
-
 </body>
 </html>
-

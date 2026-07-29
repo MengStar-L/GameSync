@@ -7,14 +7,17 @@ import (
 )
 
 type AppState struct {
-	Device         DeviceInfo          `json:"device"`
-	Accounts       []CloudflareAccount `json:"accounts"`
-	Games          []Game              `json:"games"`
-	Preferences    Preferences         `json:"preferences"`
-	Activities     []SyncActivity      `json:"activities"`
-	RecoveryStatus RecoveryStatus      `json:"recoveryStatus"`
-	Tombstones     CatalogTombstones   `json:"tombstones,omitempty"`
-	CatalogSync    CatalogSyncStatus   `json:"catalogSync,omitempty"`
+	Device             DeviceInfo             `json:"device"`
+	Accounts           []CloudflareAccount    `json:"accounts"`
+	Games              []Game                 `json:"games"`
+	Preferences        Preferences            `json:"preferences"`
+	Activities         []SyncActivity         `json:"activities"`
+	RecoveryStatus     RecoveryStatus         `json:"recoveryStatus"`
+	Tombstones         CatalogTombstones      `json:"tombstones,omitempty"`
+	CatalogSync        CatalogSyncStatus      `json:"catalogSync,omitempty"`
+	StorageGeneration  int64                  `json:"storageGeneration,omitempty"`
+	LastStorageHandoff *StorageHandoff        `json:"lastStorageHandoff,omitempty"`
+	StorageMigration   *StorageMigrationState `json:"storageMigration,omitempty"`
 }
 
 type DashboardSnapshot struct {
@@ -64,6 +67,11 @@ type CloudflareAccount struct {
 	R2Bucket            string     `json:"r2Bucket"`
 	R2AccessKeyID       string     `json:"r2AccessKeyId"`
 	R2SecretAccessKey   string     `json:"r2SecretAccessKey"`
+	Provider            string     `json:"provider,omitempty"`  // "cloudflare"(默认/空) | "webdav"
+	WebdavURL           string     `json:"webdavUrl,omitempty"` // 例 https://dav.example.com/remote.php/dav/files/user
+	WebdavUsername      string     `json:"webdavUsername,omitempty"`
+	WebdavPassword      string     `json:"webdavPassword,omitempty"` // 建议用应用专用密码
+	WebdavRoot          string     `json:"webdavRoot,omitempty"`     // 服务器上的根目录，默认 "GameSync"
 	IsPrimary           bool       `json:"isPrimary"`
 	Enabled             bool       `json:"enabled"`
 	UsedBytes           int64      `json:"usedBytes"`
@@ -95,11 +103,66 @@ type CatalogSyncStatus struct {
 }
 
 type RemoteCatalog struct {
-	Accounts    []CloudflareAccount `json:"accounts"`
-	Games       []Game              `json:"games"`
-	Preferences *RemotePreferences  `json:"preferences,omitempty"`
-	Tombstones  CatalogTombstones   `json:"tombstones,omitempty"`
-	Revision    int64               `json:"revision,omitempty"`
+	Accounts          []CloudflareAccount `json:"accounts"`
+	Games             []Game              `json:"games"`
+	Preferences       *RemotePreferences  `json:"preferences,omitempty"`
+	Tombstones        CatalogTombstones   `json:"tombstones,omitempty"`
+	Revision          int64               `json:"revision,omitempty"`
+	StorageGeneration int64               `json:"storageGeneration,omitempty"`
+	Handoff           *StorageHandoff     `json:"handoff,omitempty"`
+}
+
+const (
+	StorageHandoffPrepared  = "prepared"
+	StorageHandoffCommitted = "committed"
+
+	MigrationPhaseCopying         = "copying"
+	MigrationPhaseTargetReady     = "target_ready"
+	MigrationPhaseSourceCommitted = "source_committed"
+	MigrationPhaseLocalCommitted  = "local_committed"
+
+	MigrationItemPending  = "pending"
+	MigrationItemCopied   = "copied"
+	MigrationItemVerified = "verified"
+)
+
+type StorageHandoff struct {
+	TransactionID      string    `json:"transactionId"`
+	SourceAccountID    string    `json:"sourceAccountId"`
+	TargetAccountID    string    `json:"targetAccountId"`
+	InitiatingDeviceID string    `json:"initiatingDeviceId"`
+	State              string    `json:"state"`
+	Generation         int64     `json:"generation"`
+	CommittedAt        time.Time `json:"committedAt,omitempty" ts_type:"string"`
+}
+
+type StorageMigrationItem struct {
+	Kind            string `json:"kind"`
+	GameID          string `json:"gameId"`
+	SourceAccountID string `json:"sourceAccountId,omitempty"`
+	SourceKey       string `json:"sourceKey,omitempty"`
+	LocalPath       string `json:"localPath,omitempty"`
+	TargetKey       string `json:"targetKey"`
+	SHA256          string `json:"sha256"`
+	Size            int64  `json:"size"`
+	Status          string `json:"status"`
+	LastError       string `json:"lastError,omitempty"`
+}
+
+type StorageMigrationState struct {
+	TransactionID         string                 `json:"transactionId"`
+	SourceAccountID       string                 `json:"sourceAccountId"`
+	TargetAccountID       string                 `json:"targetAccountId"`
+	Phase                 string                 `json:"phase"`
+	SourceRevision        int64                  `json:"sourceRevision"`
+	SourceManifestVersion map[string]int         `json:"sourceManifestVersion,omitempty"`
+	LocalManifestHash     map[string]string      `json:"localManifestHash,omitempty"`
+	Generation            int64                  `json:"generation"`
+	Items                 []StorageMigrationItem `json:"items"`
+	TargetGames           []Game                 `json:"targetGames,omitempty"`
+	ConflictGameID        string                 `json:"conflictGameId,omitempty"`
+	LastError             string                 `json:"lastError,omitempty"`
+	UpdatedAt             time.Time              `json:"updatedAt" ts_type:"string"`
 }
 
 type RemotePreferences struct {
@@ -174,6 +237,7 @@ type Game struct {
 
 type BackupRecord struct {
 	Filename                  string     `json:"filename"`
+	ObjectKey                 string     `json:"objectKey,omitempty"`
 	AccountID                 string     `json:"accountId,omitempty"`
 	Type                      string     `json:"type"`
 	Name                      string     `json:"name,omitempty"`
@@ -196,6 +260,7 @@ type Backup struct {
 	Type                      string    `json:"type"`
 	Name                      string    `json:"name"`
 	Filename                  string    `json:"filename"`
+	ObjectKey                 string    `json:"objectKey,omitempty"`
 	Size                      int64     `json:"size"`
 	SHA256                    string    `json:"sha256,omitempty"`
 	StorageAccountID          string    `json:"storageAccountId,omitempty"`
@@ -245,6 +310,14 @@ type SyncAnchor struct {
 	LastRemoteVersion int          `json:"lastRemoteVersion"`
 	LastManifest      SyncManifest `json:"lastManifest"`
 	StorageAccountID  string       `json:"storageAccountId,omitempty"`
+	// PendingRemoteCleanups 记录已被新版本替换、等待延迟删除的 R2 对象，
+	// 给其他设备进行中的下载留宽限期（本地状态，不上传云端目录）
+	PendingRemoteCleanups []PendingRemoteCleanup `json:"pendingRemoteCleanups,omitempty"`
+}
+
+type PendingRemoteCleanup struct {
+	SHA256     string    `json:"sha256"`
+	ReplacedAt time.Time `json:"replacedAt" ts_type:"string"`
 }
 
 type SyncManifest struct {
@@ -293,6 +366,65 @@ type SyncActivity struct {
 }
 
 type SyncRunRequest struct {
+	GameID         string `json:"gameId"`
+	ConflictChoice string `json:"conflictChoice"`
+}
+
+type SyncResourceStats struct {
+	EnumeratedGames   int `json:"enumeratedGames"`
+	StattedFiles      int `json:"stattedFiles"`
+	HashedFiles       int `json:"hashedFiles"`
+	UploadedObjects   int `json:"uploadedObjects"`
+	DownloadedObjects int `json:"downloadedObjects"`
+}
+
+type SyncCatalogResult struct {
+	Status   string `json:"status"`
+	Message  string `json:"message,omitempty"`
+	Revision int64  `json:"revision,omitempty"`
+}
+
+type SyncCoverResult struct {
+	GameID   string `json:"gameId"`
+	GameName string `json:"gameName"`
+	Status   string `json:"status"`
+	Message  string `json:"message,omitempty"`
+}
+
+type SyncGameResult struct {
+	GameID     string `json:"gameId"`
+	GameName   string `json:"gameName"`
+	Status     string `json:"status"`
+	Message    string `json:"message,omitempty"`
+	Uploaded   int    `json:"uploaded"`
+	Downloaded int    `json:"downloaded"`
+	Conflicts  int    `json:"conflicts"`
+}
+
+type SyncBatchResult struct {
+	Snapshot DashboardSnapshot `json:"snapshot"`
+	Catalog  SyncCatalogResult `json:"catalog"`
+	Covers   []SyncCoverResult `json:"covers"`
+	Saves    []SyncGameResult  `json:"saves"`
+	Stats    SyncResourceStats `json:"stats"`
+}
+
+type StorageSwitchRequest struct {
+	ExistingAccountID string             `json:"existingAccountId,omitempty"`
+	NewAccount        *CloudflareAccount `json:"newAccount,omitempty"`
+	UseLocalData      bool               `json:"useLocalData,omitempty"`
+}
+
+type StorageSwitchResult struct {
+	Snapshot       DashboardSnapshot `json:"snapshot"`
+	Status         string            `json:"status"`
+	TransactionID  string            `json:"transactionId,omitempty"`
+	ConflictGameID string            `json:"conflictGameId,omitempty"`
+	Message        string            `json:"message,omitempty"`
+}
+
+type StorageMigrationResumeRequest struct {
+	TransactionID  string `json:"transactionId"`
 	GameID         string `json:"gameId"`
 	ConflictChoice string `json:"conflictChoice"`
 }

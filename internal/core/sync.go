@@ -17,6 +17,8 @@ import (
 
 type Engine struct{}
 
+var ErrLocalFileChanged = errors.New("local save file changed during sync")
+
 type syncObjectDownloader interface {
 	DownloadObjectToFile(ctx context.Context, key string, destinationPath string) error
 }
@@ -33,7 +35,7 @@ func NewEngine() *Engine {
 	return &Engine{}
 }
 
-func InspectLaunchSync(ctx context.Context, game Game, gateway *CloudflareGateway) (LaunchSyncInspection, error) {
+func InspectLaunchSync(ctx context.Context, game Game, gateway *StorageGateway) (LaunchSyncInspection, error) {
 	if !game.Sync.Enabled {
 		return LaunchSyncInspection{
 			Status:  "ready",
@@ -46,11 +48,11 @@ func InspectLaunchSync(ctx context.Context, game Game, gateway *CloudflareGatewa
 			Message: "未配置存档目录，直接启动。",
 		}, nil
 	}
-	if gateway == nil || gateway.D1 == nil || gateway.R2 == nil {
-		return LaunchSyncInspection{}, errors.New("cloudflare gateway is incomplete")
+	if gateway == nil || gateway.Catalog == nil || gateway.Objects == nil {
+		return LaunchSyncInspection{}, errors.New("storage gateway is incomplete")
 	}
 
-	if err := gateway.D1.EnsureSchema(ctx); err != nil {
+	if err := gateway.Catalog.EnsureSchema(ctx); err != nil {
 		return LaunchSyncInspection{}, err
 	}
 
@@ -58,7 +60,7 @@ func InspectLaunchSync(ctx context.Context, game Game, gateway *CloudflareGatewa
 	if err != nil {
 		return LaunchSyncInspection{}, err
 	}
-	remoteRecord, err := gateway.D1.LoadRemoteManifest(ctx, game.ID)
+	remoteRecord, err := gateway.Catalog.LoadRemoteManifest(ctx, game.ID)
 	if err != nil {
 		return LaunchSyncInspection{}, err
 	}
@@ -105,15 +107,7 @@ func InspectLaunchSync(ctx context.Context, game Game, gateway *CloudflareGatewa
 	return inspection, nil
 }
 
-func (e *Engine) SyncGame(ctx context.Context, device DeviceInfo, game Game, account CloudflareAccount, conflictChoice string, progress func(string)) (SyncSummary, SyncAnchor, error) {
-	gateway, err := NewCloudflareGateway(ctx, account)
-	if err != nil {
-		return SyncSummary{}, game.Anchor, err
-	}
-	return e.SyncGameWithGateway(ctx, device, game, gateway, conflictChoice, progress)
-}
-
-func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, game Game, gateway *CloudflareGateway, conflictChoice string, progress func(string)) (SyncSummary, SyncAnchor, error) {
+func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, game Game, gateway *StorageGateway, conflictChoice string, progress func(string)) (SyncSummary, SyncAnchor, error) {
 	if !game.Sync.Enabled {
 		return SyncSummary{
 			Status:   "disabled",
@@ -122,18 +116,22 @@ func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, gam
 		}, game.Anchor, nil
 	}
 	if strings.TrimSpace(game.SavePath) == "" {
-		return SyncSummary{}, game.Anchor, errors.New("游戏未配置存档目录")
+		return SyncSummary{
+			Status:   "unconfigured",
+			Message:  "当前设备未配置存档目录。",
+			SyncedAt: time.Now(),
+		}, game.Anchor, nil
 	}
 	if progress == nil {
 		progress = func(string) {}
 	}
 
-	if gateway == nil || gateway.D1 == nil || gateway.R2 == nil {
-		return SyncSummary{}, game.Anchor, errors.New("cloudflare gateway is incomplete")
+	if gateway == nil || gateway.Catalog == nil || gateway.Objects == nil {
+		return SyncSummary{}, game.Anchor, errors.New("storage gateway is incomplete")
 	}
 
-	progress("正在初始化 D1 元数据表...")
-	if err := gateway.D1.EnsureSchema(ctx); err != nil {
+	progress("正在初始化云端元数据...")
+	if err := gateway.Catalog.EnsureSchema(ctx); err != nil {
 		return SyncSummary{}, game.Anchor, err
 	}
 
@@ -144,9 +142,35 @@ func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, gam
 	}
 
 	progress("正在读取云端文件索引...")
-	remoteRecord, err := gateway.D1.LoadRemoteManifest(ctx, game.ID)
+	remoteRecord, err := gateway.Catalog.LoadRemoteManifest(ctx, game.ID)
 	if err != nil {
 		return SyncSummary{}, game.Anchor, err
+	}
+	return e.SyncGameWithPreparedManifest(ctx, device, game, gateway, conflictChoice, localManifest, remoteRecord, progress)
+}
+
+// SyncGameWithPreparedManifest executes merge and transfer work without scanning the
+// local save directory or loading the remote manifest. Callers own those two phases.
+func (e *Engine) SyncGameWithPreparedManifest(ctx context.Context, device DeviceInfo, game Game, gateway *StorageGateway, conflictChoice string, localManifest SyncManifest, remoteRecord RemoteManifestRecord, progress func(string)) (SyncSummary, SyncAnchor, error) {
+	if !game.Sync.Enabled {
+		return SyncSummary{
+			Status:   "disabled",
+			Message:  "该游戏的同步已禁用。",
+			SyncedAt: time.Now(),
+		}, game.Anchor, nil
+	}
+	if strings.TrimSpace(game.SavePath) == "" {
+		return SyncSummary{
+			Status:   "unconfigured",
+			Message:  "当前设备未配置存档目录。",
+			SyncedAt: time.Now(),
+		}, game.Anchor, nil
+	}
+	if gateway == nil || gateway.Catalog == nil || gateway.Objects == nil {
+		return SyncSummary{}, game.Anchor, errors.New("storage gateway is incomplete")
+	}
+	if progress == nil {
+		progress = func(string) {}
 	}
 
 	if remoteRecord.Version == 0 && len(remoteRecord.Manifest.Files) == 0 {
@@ -156,14 +180,16 @@ func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, gam
 				Message:  "本地与云端都没有可同步的存档。",
 				SyncedAt: time.Now(),
 			}
-			return summary, SyncAnchor{LastManifest: localManifest, StorageAccountID: game.StorageAccountID}, nil
+			anchor := SyncAnchor{LastManifest: localManifest, StorageAccountID: game.StorageAccountID}
+			anchor.PendingRemoteCleanups = game.Anchor.PendingRemoteCleanups
+			return summary, anchor, nil
 		}
 
 		progress("云端为空，正在初始化第一个远端版本...")
 		nextVersion := 1
 		localManifest.Version = nextVersion
 		uploads := diffsFromManifest(localManifest, "upload")
-		if err := e.applyUploads(ctx, gateway.R2, game, uploads); err != nil {
+		if err := e.applyUploads(ctx, gateway.Objects, game, uploads); err != nil {
 			return SyncSummary{}, game.Anchor, err
 		}
 
@@ -174,7 +200,7 @@ func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, gam
 			UpdatedAt:       time.Now(),
 			UpdatedByDevice: device.ID,
 		}
-		if err := gateway.D1.SaveRemoteManifestIfVersion(ctx, record, 0); err != nil {
+		if err := gateway.Catalog.SaveRemoteManifestIfVersion(ctx, record, 0); err != nil {
 			return SyncSummary{}, game.Anchor, err
 		}
 
@@ -184,7 +210,9 @@ func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, gam
 			Uploaded: len(uploads),
 			SyncedAt: time.Now(),
 		}
-		return summary, SyncAnchor{LastRemoteVersion: nextVersion, LastManifest: localManifest, StorageAccountID: game.StorageAccountID}, nil
+		anchor := SyncAnchor{LastRemoteVersion: nextVersion, LastManifest: localManifest, StorageAccountID: game.StorageAccountID}
+		anchor.PendingRemoteCleanups = game.Anchor.PendingRemoteCleanups
+		return summary, anchor, nil
 	}
 
 	baseManifest := game.Anchor.LastManifest
@@ -212,6 +240,7 @@ func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, gam
 		if remoteRecord.Version == 0 {
 			anchor.LastManifest = localManifest
 		}
+		anchor.PendingRemoteCleanups = game.Anchor.PendingRemoteCleanups
 		return SyncSummary{
 			Status:   "success",
 			Message:  "本地与云端已是最新状态。",
@@ -219,16 +248,24 @@ func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, gam
 		}, anchor, nil
 	}
 
+	// 下载先落盘但延迟提交（M8）：回滚句柄持有到 D1 CAS 成功后才 commit，
+	// 中途任何失败都把本地存档还原到同步前状态，重试时不会产生虚假冲突
+	var downloadRollback *localDownloadRollback
 	if len(downloads) > 0 {
 		progress("正在应用云端变更到本地...")
-		if err := e.applyDownloads(ctx, gateway.R2, game, downloads); err != nil {
+		rollback, err := e.applyDownloads(ctx, gateway.Objects, game, downloads)
+		if err != nil {
 			return SyncSummary{}, game.Anchor, err
 		}
+		downloadRollback = rollback
 	}
 
 	if len(uploads) > 0 {
-		progress("正在上传本地变更到 R2...")
-		if err := e.applyUploads(ctx, gateway.R2, game, uploads); err != nil {
+		progress("正在上传本地变更到云端...")
+		if err := e.applyUploads(ctx, gateway.Objects, game, uploads); err != nil {
+			if downloadRollback != nil {
+				_ = downloadRollback.rollback()
+			}
 			return SyncSummary{}, game.Anchor, err
 		}
 	}
@@ -243,11 +280,14 @@ func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, gam
 			UpdatedAt:       time.Now(),
 			UpdatedByDevice: device.ID,
 		}
-		progress("正在写入新的 D1 版本索引...")
-		if err := gateway.D1.SaveRemoteManifestIfVersion(ctx, record, remoteRecord.Version); err != nil {
+		progress("正在写入新的云端版本索引...")
+		if err := gateway.Catalog.SaveRemoteManifestIfVersion(ctx, record, remoteRecord.Version); err != nil {
+			if downloadRollback != nil {
+				_ = downloadRollback.rollback()
+			}
 			return SyncSummary{}, game.Anchor, err
 		}
-		e.cleanupRemoteObjects(ctx, gateway.R2, game.ID, mergedManifest, uploads)
+		anchor.PendingRemoteCleanups = e.cleanupRemoteObjects(ctx, gateway.Objects, game.ID, mergedManifest, uploads, game.Anchor.PendingRemoteCleanups)
 		anchor.LastRemoteVersion = mergedManifest.Version
 		anchor.LastManifest = mergedManifest
 		anchor.StorageAccountID = game.StorageAccountID
@@ -255,6 +295,11 @@ func (e *Engine) SyncGameWithGateway(ctx context.Context, device DeviceInfo, gam
 		anchor.LastRemoteVersion = remoteRecord.Version
 		anchor.LastManifest = remoteRecord.Manifest
 		anchor.StorageAccountID = game.StorageAccountID
+		// 仅下载的同步同样推进延迟清理（处理已到期的登记项）
+		anchor.PendingRemoteCleanups = e.cleanupRemoteObjects(ctx, gateway.Objects, game.ID, remoteRecord.Manifest, nil, game.Anchor.PendingRemoteCleanups)
+	}
+	if downloadRollback != nil {
+		downloadRollback.commit()
 	}
 
 	summary := SyncSummary{
@@ -331,7 +376,7 @@ func BuildLocalManifest(root string, includePatterns []string, excludePatterns [
 	return manifest, nil
 }
 
-func (e *Engine) applyUploads(ctx context.Context, r2 *R2Client, game Game, uploads []ManifestDiff) error {
+func (e *Engine) applyUploads(ctx context.Context, r2 ObjectStore, game Game, uploads []ManifestDiff) error {
 	for _, diff := range uploads {
 		if diff.Action != "upload" || diff.Local == nil {
 			continue
@@ -340,28 +385,94 @@ func (e *Engine) applyUploads(ctx context.Context, r2 *R2Client, game Game, uplo
 		if err != nil {
 			return err
 		}
-		if err := r2.PutObjectFromFile(ctx, objectKey(game.ID, diff.Local.SHA256), localFilePath); err != nil {
+		snapshotPath, err := stableUploadSnapshot(localFilePath, diff.Local)
+		if err != nil {
+			return err
+		}
+		if err := r2.PutObjectFromFile(ctx, objectKey(game.ID, diff.Local.SHA256), snapshotPath); err != nil {
+			_ = os.Remove(snapshotPath)
+			return err
+		}
+		_ = os.Remove(snapshotPath)
+		if err := verifyManifestFileMetadata(localFilePath, diff.Local); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (e *Engine) applyDownloads(ctx context.Context, r2 syncObjectDownloader, game Game, downloads []ManifestDiff) error {
-	rollback := newLocalDownloadRollback()
-	committed := false
+func stableUploadSnapshot(sourcePath string, expected *ManifestFile) (string, error) {
+	if expected == nil {
+		return "", errors.New("upload manifest entry is missing")
+	}
+	if err := verifyManifestFileMetadata(sourcePath, expected); err != nil {
+		return "", err
+	}
+
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	defer source.Close()
+	tempFile, err := os.CreateTemp("", ".gamesync-upload-*")
+	if err != nil {
+		return "", fmt.Errorf("create upload snapshot: %w", err)
+	}
+	tempPath := tempFile.Name()
+	removeTemp := true
 	defer func() {
-		if committed {
-			rollback.commit()
-			return
+		_ = tempFile.Close()
+		if removeTemp {
+			_ = os.Remove(tempPath)
 		}
-		_ = rollback.rollback()
 	}()
+
+	hasher := sha256.New()
+	written, err := io.Copy(io.MultiWriter(tempFile, hasher), source)
+	if err != nil {
+		return "", fmt.Errorf("copy upload snapshot: %w", err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		return "", fmt.Errorf("sync upload snapshot: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return "", fmt.Errorf("close upload snapshot: %w", err)
+	}
+	if written != expected.Size || !strings.EqualFold(hex.EncodeToString(hasher.Sum(nil)), expected.SHA256) {
+		return "", fmt.Errorf("%w: %s", ErrLocalFileChanged, expected.Path)
+	}
+	if err := verifyManifestFileMetadata(sourcePath, expected); err != nil {
+		return "", err
+	}
+	removeTemp = false
+	return tempPath, nil
+}
+
+func verifyManifestFileMetadata(path string, expected *ManifestFile) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w: %s", ErrLocalFileChanged, expected.Path)
+		}
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() != expected.Size ||
+		(!expected.ModifiedAt.IsZero() && !info.ModTime().UTC().Equal(expected.ModifiedAt.UTC())) {
+		return fmt.Errorf("%w: %s", ErrLocalFileChanged, expected.Path)
+	}
+	return nil
+}
+
+// applyDownloads 把云端变更落盘但不提交：成功时返回未提交的回滚句柄，由调用方在
+// D1 CAS 成功后 commit（M8）；自身失败时先回滚再返回错误，句柄为 nil。
+func (e *Engine) applyDownloads(ctx context.Context, r2 syncObjectDownloader, game Game, downloads []ManifestDiff) (*localDownloadRollback, error) {
+	rollback := newLocalDownloadRollback()
 
 	for _, diff := range downloads {
 		targetPath, err := safeSaveFilePath(game.SavePath, diff.Path)
 		if err != nil {
-			return err
+			_ = rollback.rollback()
+			return nil, err
 		}
 		switch diff.Action {
 		case "download":
@@ -369,43 +480,66 @@ func (e *Engine) applyDownloads(ctx context.Context, r2 syncObjectDownloader, ga
 				continue
 			}
 			if err := rollback.stage(targetPath); err != nil {
-				return err
+				_ = rollback.rollback()
+				return nil, err
 			}
 			if err := downloadObjectToVerifiedFile(ctx, r2, objectKey(game.ID, diff.Remote.SHA256), targetPath, diff.Remote); err != nil {
-				return err
+				_ = rollback.rollback()
+				return nil, err
 			}
 		case "delete_local":
 			if err := rollback.stage(targetPath); err != nil {
-				return err
+				_ = rollback.rollback()
+				return nil, err
 			}
 		}
 	}
-	committed = true
-	return nil
+	return rollback, nil
 }
 
-func (e *Engine) cleanupRemoteObjects(ctx context.Context, r2 *R2Client, gameID string, manifest SyncManifest, diffs []ManifestDiff) {
-	if r2 == nil {
-		return
-	}
+// remoteObjectCleanupGrace 被替换对象的删除宽限期：给其他设备进行中的下载留时间
+const remoteObjectCleanupGrace = 10 * time.Minute
+
+// cleanupRemoteObjects 延迟清理被替换的 R2 对象：新替换的先登记不删；
+// 已登记且超过宽限期的才真正删除；期间又被清单重新引用的直接放弃清理。
+// 返回更新后的登记列表，由调用方存入 anchor 持久化。
+func (e *Engine) cleanupRemoteObjects(ctx context.Context, r2 ObjectStore, gameID string, manifest SyncManifest, diffs []ManifestDiff, pending []PendingRemoteCleanup) []PendingRemoteCleanup {
 	referenced := make(map[string]bool, len(manifest.Files))
 	for _, file := range manifest.Files {
 		if strings.TrimSpace(file.SHA256) != "" {
 			referenced[file.SHA256] = true
 		}
 	}
+	now := time.Now()
 	seen := make(map[string]bool)
-	for _, diff := range diffs {
-		if diff.Remote == nil || strings.TrimSpace(diff.Remote.SHA256) == "" {
+	next := make([]PendingRemoteCleanup, 0, len(pending)+len(diffs))
+	for _, entry := range pending {
+		sha := strings.TrimSpace(entry.SHA256)
+		if sha == "" || referenced[sha] || seen[sha] {
 			continue
 		}
-		sha := strings.TrimSpace(diff.Remote.SHA256)
-		if referenced[sha] || seen[sha] {
+		if r2 != nil && now.Sub(entry.ReplacedAt) > remoteObjectCleanupGrace {
+			_ = r2.DeleteObject(ctx, objectKey(gameID, sha))
 			continue
 		}
 		seen[sha] = true
-		_ = r2.DeleteObject(ctx, objectKey(gameID, sha))
+		next = append(next, entry)
 	}
+	for _, diff := range diffs {
+		if diff.Remote == nil {
+			continue
+		}
+		sha := strings.TrimSpace(diff.Remote.SHA256)
+		if sha == "" || referenced[sha] || seen[sha] {
+			continue
+		}
+		seen[sha] = true
+		next = append(next, PendingRemoteCleanup{SHA256: sha, ReplacedAt: now})
+	}
+	if len(next) == 0 {
+		return nil
+	}
+	return next
 }
 
 func safeSaveFilePath(root string, relPath string) (string, error) {
