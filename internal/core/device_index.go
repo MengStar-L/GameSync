@@ -307,6 +307,27 @@ func (s *DeviceIndexStore) UpdateCover(gameID string, cover DeviceCoverIndex) (D
 	return cloneDeviceGameIndex(game), nil
 }
 
+func (s *DeviceIndexStore) RepointAccountIDs(aliases map[string]string) error {
+	if s == nil || len(aliases) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := cloneDeviceIndex(s.index)
+	changed := false
+	for gameID, game := range next.Games {
+		if replacement := aliases[strings.TrimSpace(game.Cover.AccountID)]; replacement != "" && replacement != game.Cover.AccountID {
+			game.Cover.AccountID = replacement
+			next.Games[gameID] = game
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.persistLocked(next)
+}
+
 func (s *DeviceIndexStore) RemoveGame(gameID string) error {
 	gameID = strings.TrimSpace(gameID)
 	if gameID == "" {

@@ -208,6 +208,7 @@ func (s *Store) CommitStorageMigration(transactionID string, target CloudflareAc
 	migration.Phase = MigrationPhaseLocalCommitted
 	migration.UpdatedAt = now
 	s.state.CatalogSync.Dirty = true
+	s.state.CatalogSync.InitialPullCompleted = true
 	s.state.CatalogSync.LastQueuedAt = &now
 	s.normalizeAccountsLocked()
 	s.reorderAccountsLocked()
@@ -268,6 +269,7 @@ func (s *Store) FollowStorageHandoff(target CloudflareAccount, games []Game, han
 	s.state.StorageGeneration = handoff.Generation
 	s.state.LastStorageHandoff = &handoffCopy
 	s.state.CatalogSync.Dirty = true
+	s.state.CatalogSync.InitialPullCompleted = true
 	s.state.CatalogSync.LastQueuedAt = &now
 	s.normalizeAccountsLocked()
 	s.reorderAccountsLocked()

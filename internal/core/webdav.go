@@ -313,13 +313,23 @@ func sanitizeRemoteCatalog(catalog RemoteCatalog) RemoteCatalog {
 
 // mergeWebdavCredentials 与 D1 行为对齐：本次未提供某账号密文时保留旧值，
 // 避免整文档替换把已备份的加密凭据清空
-func mergeWebdavCredentials(existing map[string]EncryptedCredentialBlob, updates map[string]EncryptedCredentialBlob) map[string]EncryptedCredentialBlob {
-	merged := make(map[string]EncryptedCredentialBlob, len(existing)+len(updates))
+func mergeWebdavCredentials(existing map[string]EncryptedCredentialBlob, updates map[string]EncryptedCredentialBlob, accounts []CloudflareAccount) map[string]EncryptedCredentialBlob {
+	active := make(map[string]bool, len(accounts))
+	for _, account := range accounts {
+		if id := strings.TrimSpace(account.ID); id != "" {
+			active[id] = true
+		}
+	}
+	merged := make(map[string]EncryptedCredentialBlob, len(active))
 	for id, blob := range existing {
-		merged[id] = blob
+		if active[id] {
+			merged[id] = blob
+		}
 	}
 	for id, blob := range updates {
-		merged[id] = blob
+		if active[id] {
+			merged[id] = blob
+		}
 	}
 	return merged
 }
@@ -337,7 +347,7 @@ func (c *WebdavClient) SaveRemoteCatalog(ctx context.Context, catalog RemoteCata
 		next := webdavCatalogDocument{
 			Revision:    current.Revision + 1,
 			Catalog:     sanitized,
-			Credentials: mergeWebdavCredentials(current.Credentials, encryptedCredentials),
+			Credentials: mergeWebdavCredentials(current.Credentials, encryptedCredentials, sanitized.Accounts),
 			Device:      device,
 		}
 		next.Catalog.Handoff = current.Catalog.Handoff

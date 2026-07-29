@@ -14,6 +14,23 @@ import (
 
 const maxManifestCASAttempts = 3
 
+var coverRetryBackoff = [...]time.Duration{
+	30 * time.Second,
+	60 * time.Second,
+	2 * time.Minute,
+	5 * time.Minute,
+}
+
+func coverRetryDelay(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	if attempt >= len(coverRetryBackoff) {
+		return coverRetryBackoff[len(coverRetryBackoff)-1]
+	}
+	return coverRetryBackoff[attempt]
+}
+
 func (a *App) RunSyncAll() (core.SyncBatchResult, error) {
 	if err := a.ensureReady(); err != nil {
 		return core.SyncBatchResult{}, err
@@ -100,15 +117,19 @@ func (a *App) syncTargets(requests []core.SyncRunRequest) ([]core.SyncRunRequest
 	return result, nil
 }
 
-func (a *App) syncCoverForCoordinator(gameID string) core.SyncCoverResult {
+func (a *App) syncCoverForCoordinator(gameID string) (result core.SyncCoverResult) {
 	state := a.store.Snapshot()
 	game, err := findGame(state, gameID)
 	if err != nil {
-		return core.SyncCoverResult{GameID: gameID, Status: "pending", Message: err.Error()}
+		a.clearCoverRetry(gameID)
+		a.emitCoverSyncState(gameID, "skipped", err.Error())
+		return core.SyncCoverResult{GameID: gameID, Status: "skipped", Message: err.Error()}
 	}
-	result := core.SyncCoverResult{GameID: game.ID, GameName: game.Name, Status: "skipped"}
+	result = core.SyncCoverResult{GameID: game.ID, GameName: game.Name, Status: "skipped"}
 	if strings.TrimSpace(game.CoverPath) == "" && strings.TrimSpace(game.CoverSource) == "" &&
 		strings.TrimSpace(game.CoverLocalPath) == "" && strings.TrimSpace(game.CoverCloudKey) == "" {
+		a.clearCoverRetry(game.ID)
+		a.emitCoverSyncState(game.ID, "skipped", "")
 		return result
 	}
 	if target, ok := selectCoverStorageAccount(state, game); ok {
@@ -120,6 +141,8 @@ func (a *App) syncCoverForCoordinator(gameID string) core.SyncCoverResult {
 					AccountID:         accountID,
 					ObjectKey:         objectKey,
 				}) && indexed.Cover.SourceFingerprint != "" {
+					a.clearCoverRetry(game.ID)
+					a.emitCoverSyncState(game.ID, "skipped", "")
 					return result
 				}
 			}
@@ -127,7 +150,24 @@ func (a *App) syncCoverForCoordinator(gameID string) core.SyncCoverResult {
 	}
 
 	beforeAccount, beforeKey := coverCloudLocation(game)
-	a.emitSyncProgress(game.ID, msgCoverSyncing)
+	a.emitCoverSyncState(game.ID, "syncing", msgCoverSyncing)
+	defer func() {
+		switch result.Status {
+		case "pending":
+			message := strings.TrimSpace(result.Message)
+			if message == "" {
+				message = "封面等待重试"
+			}
+			a.emitCoverSyncState(game.ID, "pending", message)
+			a.scheduleCoverRetry(game.ID)
+		case "uploaded":
+			a.clearCoverRetry(game.ID)
+			a.emitCoverSyncState(game.ID, "succeeded", "封面同步完成")
+		default:
+			a.clearCoverRetry(game.ID)
+			a.emitCoverSyncState(game.ID, "skipped", "")
+		}
+	}()
 	if err := a.syncGameCover(state, game); err != nil {
 		result.Status = "pending"
 		result.Message = err.Error()
@@ -156,6 +196,88 @@ func (a *App) syncCoverForCoordinator(gameID string) core.SyncCoverResult {
 		})
 	}
 	return result
+}
+
+func (a *App) emitCoverSyncState(gameID string, status string, message string) {
+	a.emitRuntimeEvent("cover:sync_state", map[string]string{
+		"gameId":  strings.TrimSpace(gameID),
+		"status":  strings.TrimSpace(status),
+		"message": strings.TrimSpace(message),
+	})
+}
+
+func (a *App) scheduleCoverRetry(gameID string) {
+	gameID = strings.TrimSpace(gameID)
+	if gameID == "" {
+		return
+	}
+	a.coverRetryMu.Lock()
+	defer a.coverRetryMu.Unlock()
+	if a.coverRetryStopped {
+		return
+	}
+	if a.coverRetryTimers == nil {
+		a.coverRetryTimers = make(map[string]*time.Timer)
+	}
+	if a.coverRetryAttempts == nil {
+		a.coverRetryAttempts = make(map[string]int)
+	}
+	if _, scheduled := a.coverRetryTimers[gameID]; scheduled {
+		return
+	}
+	attempt := a.coverRetryAttempts[gameID]
+	delayFn := a.coverRetryDelayFn
+	if delayFn == nil {
+		delayFn = coverRetryDelay
+	}
+	a.coverRetryAttempts[gameID] = attempt + 1
+	a.coverRetryTimers[gameID] = time.AfterFunc(delayFn(attempt), func() {
+		a.coverRetryMu.Lock()
+		delete(a.coverRetryTimers, gameID)
+		a.coverRetryMu.Unlock()
+		a.retryPendingCover(gameID)
+	})
+}
+
+func (a *App) retryPendingCover(gameID string) {
+	finish, err := a.beginRemoteOperation()
+	if err != nil {
+		a.emitCoverSyncState(gameID, "pending", err.Error())
+		a.scheduleCoverRetry(gameID)
+		return
+	}
+	defer finish()
+	a.syncCoordinatorMu.Lock()
+	result := a.syncCoverForCoordinator(gameID)
+	a.syncCoordinatorMu.Unlock()
+	if result.Status == "uploaded" {
+		a.emitStateUpdated()
+		a.queueRemoteCatalogSync("cover retry")
+	}
+}
+
+func (a *App) clearCoverRetry(gameID string) {
+	gameID = strings.TrimSpace(gameID)
+	a.coverRetryMu.Lock()
+	defer a.coverRetryMu.Unlock()
+	if timer := a.coverRetryTimers[gameID]; timer != nil {
+		timer.Stop()
+	}
+	delete(a.coverRetryTimers, gameID)
+	delete(a.coverRetryAttempts, gameID)
+}
+
+func (a *App) stopCoverRetries() {
+	a.coverRetryMu.Lock()
+	defer a.coverRetryMu.Unlock()
+	a.coverRetryStopped = true
+	for gameID, timer := range a.coverRetryTimers {
+		if timer != nil {
+			timer.Stop()
+		}
+		delete(a.coverRetryTimers, gameID)
+	}
+	clear(a.coverRetryAttempts)
 }
 
 func (a *App) syncPendingGameCovers() []core.SyncCoverResult {
@@ -356,6 +478,9 @@ func (a *App) ensureDeviceIndex() (*core.DeviceIndexStore, error) {
 	a.syncInfraMu.Lock()
 	defer a.syncInfraMu.Unlock()
 	if a.deviceIndex != nil {
+		if a.store != nil {
+			_ = a.deviceIndex.RepointAccountIDs(a.store.AccountAliases())
+		}
 		return a.deviceIndex, nil
 	}
 	if a.store == nil {
@@ -363,6 +488,9 @@ func (a *App) ensureDeviceIndex() (*core.DeviceIndexStore, error) {
 	}
 	index, err := core.NewDeviceIndexStore(a.store.DataDir(), a.store.Snapshot().Device.ID)
 	if err != nil {
+		return nil, err
+	}
+	if err := index.RepointAccountIDs(a.store.AccountAliases()); err != nil {
 		return nil, err
 	}
 	a.deviceIndex = index

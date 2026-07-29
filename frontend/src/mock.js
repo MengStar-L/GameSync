@@ -155,7 +155,7 @@ export function createMockBackend() {
       { id: "a-4", gameId: "g-7", gameName: "赛博朋克 2077", accountId: "acc-2", status: "failed", message: "网络错误，上传中断", uploaded: 0, downloaded: 0, conflicts: 0, startedAt: agoIso(60 * 30), endedAt: agoIso(60 * 30) },
     ],
     recoveryStatus: { hasRecoveryPassword: false, remoteCatalogAvailable: true, pendingCredentialBackup: false, lastCatalogSyncAt: agoIso(12) },
-    catalogSync: { dirty: false, lastKnownRevision: 42, lastSuccessAt: agoIso(12) },
+    catalogSync: { dirty: false, initialPullCompleted: true, lastKnownRevision: 42, lastSuccessAt: agoIso(12) },
   };
 
   const backupsByGame = new Map();
@@ -284,6 +284,12 @@ export function createMockBackend() {
     async RunSync({ gameId, conflictChoice }) {
       const game = state.games.find((g) => g.id === gameId);
       if (!game) return snapshot();
+      emit("cover:sync_state", { gameId, status: "syncing", message: "正在同步游戏封面" });
+      emit("cover:sync_state", {
+        gameId,
+        status: game.mockCoverPending ? "pending" : "skipped",
+        message: game.mockCoverPending ? String(game.mockCoverPending) : "",
+      });
       emit("sync:progress", { gameId, message: `正在比对 ${game.name} 的存档…` });
       await delay(900);
       runSaveSync(game, conflictChoice);
@@ -309,6 +315,13 @@ export function createMockBackend() {
         status: game.mockCoverPending ? "pending" : "skipped",
         message: game.mockCoverPending ? String(game.mockCoverPending) : game.coverPath ? "封面内容未变化" : "未配置封面",
       }));
+      for (const cover of covers) {
+        emit("cover:sync_state", {
+          gameId: cover.gameId,
+          status: cover.status,
+          message: cover.message,
+        });
+      }
       return {
         snapshot: snapshot(),
         catalog: { status: "success", revision: state.catalogSync.lastKnownRevision },

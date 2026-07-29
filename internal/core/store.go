@@ -14,10 +14,11 @@ import (
 )
 
 type Store struct {
-	mu      sync.Mutex
-	baseDir string
-	path    string
-	state   AppState
+	mu             sync.Mutex
+	baseDir        string
+	path           string
+	state          AppState
+	accountAliases map[string]string
 }
 
 func NewStore(baseDir string) (*Store, error) {
@@ -26,8 +27,9 @@ func NewStore(baseDir string) (*Store, error) {
 	}
 
 	store := &Store{
-		baseDir: baseDir,
-		path:    filepath.Join(baseDir, "state.json"),
+		baseDir:        baseDir,
+		path:           filepath.Join(baseDir, "state.json"),
+		accountAliases: map[string]string{},
 	}
 
 	if err := store.load(); err != nil {
@@ -85,6 +87,7 @@ func (s *Store) ImportState(data []byte) error {
 	}
 	s.ensureTombstonesLocked()
 	s.normalizeCatalogTimestampsLocked()
+	s.rememberAccountAliasesLocked(s.normalizeWebdavAccountsLocked(time.Now()))
 	s.normalizeAccountsLocked()
 	s.reorderAccountsLocked()
 	s.assignAccountNamesLocked()
@@ -117,6 +120,13 @@ func (s *Store) UpsertAccount(account CloudflareAccount) (CloudflareAccount, err
 	account.WebdavPassword = strings.TrimSpace(account.WebdavPassword)
 	account.WebdavRoot = strings.TrimSpace(account.WebdavRoot)
 	account.VerificationState = strings.TrimSpace(account.VerificationState)
+	if AccountProvider(account) == ProviderWebdav {
+		normalized, err := NormalizeWebdavAccount(account)
+		if err != nil {
+			return CloudflareAccount{}, err
+		}
+		account = normalized
+	}
 
 	// 按 provider 校验必填项：webdav 三项必填，cloudflare 维持原校验
 	if AccountProvider(account) == ProviderWebdav {
@@ -169,6 +179,7 @@ func (s *Store) UpsertAccount(account CloudflareAccount) (CloudflareAccount, err
 		s.state.Accounts = append(s.state.Accounts, account)
 	}
 	delete(s.state.Tombstones.Accounts, account.ID)
+	s.rememberAccountAliasesLocked(s.normalizeWebdavAccountsLocked(now))
 	s.normalizeAccountsLocked()
 	s.reorderAccountsLocked()
 	s.assignAccountNamesLocked()
@@ -232,6 +243,13 @@ func (s *Store) SwitchPrimaryStorage(account CloudflareAccount) (CloudflareAccou
 	account.WebdavPassword = strings.TrimSpace(account.WebdavPassword)
 	account.WebdavRoot = strings.TrimSpace(account.WebdavRoot)
 	account.VerificationState = strings.TrimSpace(account.VerificationState)
+	if AccountProvider(account) == ProviderWebdav {
+		normalized, err := NormalizeWebdavAccount(account)
+		if err != nil {
+			return CloudflareAccount{}, err
+		}
+		account = normalized
+	}
 
 	// 新账号即将成为主账号，按主账号标准校验必填项（与 UpsertAccount 同一套规则）
 	if AccountProvider(account) == ProviderWebdav {
@@ -410,9 +428,25 @@ func (s *Store) MarkCatalogSynced(revision int64) error {
 	defer s.mu.Unlock()
 	now := time.Now()
 	s.state.CatalogSync.Dirty = false
+	s.state.CatalogSync.InitialPullCompleted = true
 	s.state.CatalogSync.LastKnownRevision = revision
 	s.state.CatalogSync.LastSuccessAt = &now
 	s.state.CatalogSync.LastError = ""
+	return s.saveLocked()
+}
+
+func (s *Store) MarkCatalogInitialPullCompleted() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.CatalogSync.InitialPullCompleted = true
+	return s.saveLocked()
+}
+
+func (s *Store) ResetCatalogInitialPull() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.CatalogSync.InitialPullCompleted = false
+	s.state.CatalogSync.LastKnownRevision = 0
 	return s.saveLocked()
 }
 
@@ -461,6 +495,8 @@ func (s *Store) PrimaryAccount() (CloudflareAccount, bool) {
 func (s *Store) MergeRemoteCatalog(catalog RemoteCatalog) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	catalog, aliases := NormalizeRemoteCatalogWebdavIdentities(catalog, time.Now())
+	s.rememberAccountAliasesLocked(aliases)
 	s.ensureTombstonesLocked()
 	mergeTombstones(s.state.Tombstones.Games, catalog.Tombstones.Games)
 	mergeTombstones(s.state.Tombstones.Accounts, catalog.Tombstones.Accounts)
@@ -527,7 +563,7 @@ func (s *Store) MergeRemoteCatalog(catalog RemoteCatalog) error {
 			remoteAccount.R2AccessKeyID = ""
 			remoteAccount.R2SecretAccessKey = ""
 			remoteAccount.VerificationState = "invalid"
-			remoteAccount.LastError = "涓昏处鍙?catalog 涓己灏戝壇璐﹀彿鍑嵁锛岃閲嶆柊缂栬緫淇濆瓨"
+			remoteAccount.LastError = msgCatalogMissingSecondaryCreds
 		} else if remoteAccount.VerificationState == "" || remoteAccount.VerificationState == "invalid" {
 			remoteAccount.VerificationState = "pending"
 			remoteAccount.LastError = ""
@@ -992,6 +1028,7 @@ func (s *Store) load() error {
 		s.state.Activities = []SyncActivity{}
 	}
 	s.ensureTombstonesLocked()
+	s.rememberAccountAliasesLocked(s.normalizeWebdavAccountsLocked(time.Now()))
 	s.normalizeAccountsLocked()
 	s.reorderAccountsLocked()
 	s.assignAccountNamesLocked()

@@ -94,12 +94,13 @@ type RecoveryStatus struct {
 }
 
 type CatalogSyncStatus struct {
-	Dirty             bool       `json:"dirty"`
-	LastKnownRevision int64      `json:"lastKnownRevision"`
-	LastQueuedAt      *time.Time `json:"lastQueuedAt,omitempty" ts_type:"string | null"`
-	LastAttemptAt     *time.Time `json:"lastAttemptAt,omitempty" ts_type:"string | null"`
-	LastSuccessAt     *time.Time `json:"lastSuccessAt,omitempty" ts_type:"string | null"`
-	LastError         string     `json:"lastError,omitempty"`
+	Dirty                bool       `json:"dirty"`
+	InitialPullCompleted bool       `json:"initialPullCompleted"`
+	LastKnownRevision    int64      `json:"lastKnownRevision"`
+	LastQueuedAt         *time.Time `json:"lastQueuedAt,omitempty" ts_type:"string | null"`
+	LastAttemptAt        *time.Time `json:"lastAttemptAt,omitempty" ts_type:"string | null"`
+	LastSuccessAt        *time.Time `json:"lastSuccessAt,omitempty" ts_type:"string | null"`
+	LastError            string     `json:"lastError,omitempty"`
 }
 
 type RemoteCatalog struct {

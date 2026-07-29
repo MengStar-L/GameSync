@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"gamesync/internal/core"
 )
@@ -312,5 +313,95 @@ func TestRunSyncAllRetriesRemoteManifestConflict(t *testing.T) {
 	if stored.LastSync == nil || stored.LastSync.Status != "success" ||
 		stored.Anchor.LastRemoteVersion != remote.Version || stored.Anchor.LastManifest.Hash != remote.Manifest.Hash {
 		t.Fatalf("persisted game after retry = %+v", stored)
+	}
+}
+
+func TestCoverRetryDelayIsBounded(t *testing.T) {
+	want := []time.Duration{30 * time.Second, 60 * time.Second, 2 * time.Minute, 5 * time.Minute, 5 * time.Minute}
+	for attempt, expected := range want {
+		if got := coverRetryDelay(attempt); got != expected {
+			t.Fatalf("attempt %d delay = %s, want %s", attempt, got, expected)
+		}
+	}
+}
+
+func TestCoverSyncEmitsOneTerminalStateAfterStarting(t *testing.T) {
+	app, store, _, objects := newSyncCoordinatorFixture(t)
+	t.Cleanup(app.stopCoverRetries)
+	coverPath := filepath.Join(store.DataDir(), "terminal-cover.jpg")
+	if err := os.WriteFile(coverPath, []byte("cover-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	game, err := store.UpsertGame(core.Game{
+		ID: "terminal-cover", Name: "Terminal Cover", CoverPath: coverPath,
+		CoverSourceType: coverSourceLocalFile, CoverSource: coverPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects.failPut = 1
+	var events []map[string]string
+	app.runtimeEventFn = func(name string, payload any) {
+		if name == "cover:sync_state" {
+			events = append(events, payload.(map[string]string))
+		}
+	}
+
+	result := app.syncCoverForCoordinator(game.ID)
+	if result.Status != "pending" {
+		t.Fatalf("cover result = %+v", result)
+	}
+	if len(events) != 2 || events[0]["status"] != "syncing" || events[1]["status"] != "pending" {
+		t.Fatalf("cover event sequence = %+v", events)
+	}
+}
+
+func TestPendingCoverRetriesAndClearsAfterSuccess(t *testing.T) {
+	app, store, _, objects := newSyncCoordinatorFixture(t)
+	t.Cleanup(app.stopCoverRetries)
+	app.coverRetryDelayFn = func(int) time.Duration { return 10 * time.Millisecond }
+	coverPath := filepath.Join(store.DataDir(), "retry-cover.jpg")
+	if err := os.WriteFile(coverPath, []byte("retry-cover-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	game, err := store.UpsertGame(core.Game{
+		ID: "retry-cover", Name: "Retry Cover", CoverPath: coverPath,
+		CoverSourceType: coverSourceLocalFile, CoverSource: coverPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects.failPut = 1
+	succeeded := make(chan struct{}, 1)
+	app.runtimeEventFn = func(name string, payload any) {
+		if name != "cover:sync_state" {
+			return
+		}
+		if payload.(map[string]string)["status"] == "succeeded" {
+			select {
+			case succeeded <- struct{}{}:
+			default:
+			}
+		}
+	}
+
+	if result := app.syncCoverForCoordinator(game.ID); result.Status != "pending" {
+		t.Fatalf("initial cover result = %+v", result)
+	}
+	select {
+	case <-succeeded:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pending cover was not retried successfully")
+	}
+	updated, err := findGame(store.Snapshot(), game.ID)
+	if err != nil || updated.CoverCloudKey == "" || objects.puts[updated.CoverCloudKey] != 1 {
+		t.Fatalf("retried cover = %+v, puts=%v, err=%v", updated, objects.puts, err)
+	}
+	app.coverRetryMu.Lock()
+	pendingTimers := len(app.coverRetryTimers)
+	pendingAttempts := len(app.coverRetryAttempts)
+	app.coverRetryMu.Unlock()
+	if pendingTimers != 0 || pendingAttempts != 0 {
+		t.Fatalf("retry state was not cleared: timers=%d attempts=%d", pendingTimers, pendingAttempts)
 	}
 }

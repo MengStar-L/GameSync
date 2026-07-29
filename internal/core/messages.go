@@ -58,6 +58,7 @@ const (
 	msgWebdavURLInvalid               = "WebDAV 服务器地址无效，请填写 http(s) 地址"
 	msgWebdavAuthFailed               = "认证失败，请检查用户名与应用密码"
 	msgWebdavCatalogConflict          = "云端目录并发冲突，多次重试仍失败，请稍后再试"
+	msgWebdavDifferentNamespace       = "此 WebDAV 同步空间与当前主空间不同；如需使用其中的数据，请通过“切换存储方式”显式迁移"
 	msgManifestReadRootFailed         = "读取存档目录失败: %w"
 	msgManifestRootNotDir             = "存档路径不是目录"
 )

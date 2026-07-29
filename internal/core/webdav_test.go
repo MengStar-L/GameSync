@@ -295,7 +295,8 @@ func TestWebdavSaveRemoteCatalogRevisionAndConflictRetry(t *testing.T) {
 		}},
 	}
 	credentials := map[string]EncryptedCredentialBlob{
-		"acc1": {Version: 1, KDF: "argon2id", Ciphertext: "cipher-a"},
+		"acc1":           {Version: 1, KDF: "argon2id", Ciphertext: "cipher-a"},
+		"legacy-account": {Version: 1, KDF: "argon2id", Ciphertext: "stale-cipher"},
 	}
 	device := DeviceInfo{ID: "dev1", Name: "机器A"}
 
@@ -315,6 +316,9 @@ func TestWebdavSaveRemoteCatalogRevisionAndConflictRetry(t *testing.T) {
 	}
 	if !strings.Contains(stored, "cipher-a") {
 		t.Fatalf("stored catalog missing encrypted credentials: %s", stored)
+	}
+	if strings.Contains(stored, "stale-cipher") {
+		t.Fatalf("stored catalog retained credentials for a removed account: %s", stored)
 	}
 
 	// 本次未提供的密文保留旧值

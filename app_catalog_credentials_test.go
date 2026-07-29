@@ -45,3 +45,34 @@ func TestPrepareCatalogForOrdinaryMergePreservesLocalPrimary(t *testing.T) {
 		t.Fatalf("unusable remote primary was accepted: %+v", prepared.Accounts[1])
 	}
 }
+
+func TestNormalizeRemoteWebdavIdentityBeforeCredentialMerge(t *testing.T) {
+	localAccount, err := core.NormalizeWebdavAccount(core.CloudflareAccount{
+		Provider: core.ProviderWebdav, WebdavURL: "https://dav.example.test/root", WebdavRoot: "GameSync",
+		WebdavUsername: "current-user", WebdavPassword: "current-password", IsPrimary: true, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := core.RemoteCatalog{Accounts: []core.CloudflareAccount{{
+		ID: "legacy-random-id", Provider: core.ProviderWebdav, WebdavURL: "HTTPS://DAV.EXAMPLE.TEST:443/root/",
+		WebdavRoot: "/GameSync/", WebdavUsername: "legacy-user", IsPrimary: true, Enabled: true,
+	}}}
+	encrypted := map[string]core.EncryptedCredentialBlob{
+		"legacy-random-id": {Version: 1, Ciphertext: "legacy-cipher"},
+	}
+
+	normalized, normalizedCredentials := normalizeRemoteCatalogForMerge(remote, encrypted)
+	if len(normalized.Accounts) != 1 || normalized.Accounts[0].ID != localAccount.ID {
+		t.Fatalf("normalized accounts = %+v", normalized.Accounts)
+	}
+	if normalizedCredentials[localAccount.ID].Ciphertext != "legacy-cipher" {
+		t.Fatalf("normalized credentials = %+v", normalizedCredentials)
+	}
+	prepared, failures := prepareCatalogForOrdinaryMerge(
+		core.AppState{Accounts: []core.CloudflareAccount{localAccount}}, normalized, nil, "",
+	)
+	if len(failures) != 0 || prepared.Accounts[0].WebdavPassword != "current-password" || !prepared.Accounts[0].Enabled {
+		t.Fatalf("prepared account = %+v, failures = %+v", prepared.Accounts[0], failures)
+	}
+}

@@ -5,11 +5,13 @@
 
 import { api } from "./api.js";
 import { toast, confirm, conflictDialog } from "./ui.js";
+import { deriveSyncStatus } from "./sync-state.js";
 
 const state = {
   snapshot: null, // DashboardSnapshot
   runtimeStatus: {}, // { [gameId]: { text, tone: 'playing'|'syncing'|'success'|'warn' } }
   netStatus: { state: "checking", message: "检测中" },
+  syncTasks: { catalog: { status: "checking", message: "检测中" }, covers: {}, saves: {} },
   search: "",
   libraryFilter: { kind: "all", tag: "" }, // 'all' | 'fav' | 'tag'
   pendingDeletes: new Set(), // 乐观隐藏中的游戏
@@ -76,6 +78,70 @@ function setNet(netState, message) {
   if (prev.state === netState && prev.message === msg) return;
   state.netStatus = { state: netState, message: msg };
   notify();
+}
+
+function recomputeSyncStatus() {
+  const next = deriveSyncStatus(state.syncTasks);
+  setNet(next.state, next.message);
+}
+
+function setCatalogSyncStatus(status, message) {
+  state.syncTasks.catalog = { status: status || "checking", message: message || "" };
+  recomputeSyncStatus();
+}
+
+function setSaveSyncStatus(gameId, status, message = "") {
+  if (!gameId) return;
+  if (status) state.syncTasks.saves[gameId] = { status, message };
+  else delete state.syncTasks.saves[gameId];
+  recomputeSyncStatus();
+}
+
+function setCoverSyncStatus(payload) {
+  const gameId = eventGameId(payload);
+  if (!gameId) return;
+  const status = payload?.status || "skipped";
+  const message = payload?.message || "";
+  if (status === "skipped") {
+    delete state.syncTasks.covers[gameId];
+    if (state.runtimeStatus[gameId]?.source === "cover") setRuntimeStatus(gameId, null);
+    recomputeSyncStatus();
+    return;
+  }
+
+  state.syncTasks.covers[gameId] = { status, message };
+  if (status === "syncing") {
+    setRuntimeStatus(gameId, { text: message || "正在同步游戏封面", tone: "syncing", source: "cover" });
+  } else if (status === "pending") {
+    setRuntimeStatus(gameId, { text: "封面等待重试", tone: "warn", source: "cover" });
+  } else if (status === "succeeded") {
+    setRuntimeStatus(gameId, { text: message || "封面同步完成", tone: "success", source: "cover" });
+    window.setTimeout(() => {
+      if (state.syncTasks.covers[gameId]?.status === "succeeded") delete state.syncTasks.covers[gameId];
+      if (state.runtimeStatus[gameId]?.source === "cover" && state.runtimeStatus[gameId]?.tone === "success") {
+        setRuntimeStatus(gameId, null);
+      }
+      recomputeSyncStatus();
+    }, 3000);
+  }
+  recomputeSyncStatus();
+}
+
+function hasPendingCover(gameId) {
+  return state.syncTasks.covers[gameId]?.status === "pending";
+}
+
+function restorePendingCoverStatus(gameId) {
+  if (!hasPendingCover(gameId)) return false;
+  setRuntimeStatus(gameId, { text: "封面等待重试", tone: "warn", source: "cover" });
+  recomputeSyncStatus();
+  return true;
+}
+
+function refreshCatalogStatusFromSnapshot() {
+  const catalog = appState().catalogSync || {};
+  if (catalog.lastError) setCatalogSyncStatus("offline", catalog.lastError);
+  else if (!catalog.dirty && catalog.lastSuccessAt) setCatalogSyncStatus("succeeded", "云端目录已同步");
 }
 
 function eventGameId(payload) {
@@ -168,6 +234,10 @@ const actions = {
     const snap = await api.Bootstrap();
     state.booted = true;
     applySnapshot(snap);
+    const catalog = snap?.state?.catalogSync || {};
+    if (catalog.lastError) setCatalogSyncStatus("offline", catalog.lastError);
+    else if (catalog.lastSuccessAt) setCatalogSyncStatus("succeeded", "云端目录已同步");
+    else if (catalog.dirty) setCatalogSyncStatus("pending", "等待连接云端");
   },
 
   setSearch(q) {
@@ -188,12 +258,14 @@ const actions = {
     if (!game) return "skipped";
     setNet("syncing", `正在同步 ${game.name}…`);
     setRuntimeStatus(gameId, { text: "同步中", tone: "syncing" });
+    setSaveSyncStatus(gameId, "syncing", `正在同步 ${game.name}`);
     try {
       applySnapshot(await api.RunSync({ gameId, conflictChoice }));
+      refreshCatalogStatusFromSnapshot();
       const updated = select.game(gameId);
       if (!updated) {
         setRuntimeStatus(gameId, null);
-        setNet("online", "");
+        setSaveSyncStatus(gameId, null);
         return "skipped";
       }
       const syncStatus =
@@ -205,36 +277,39 @@ const actions = {
       if (syncStatus === "conflict") {
         setRuntimeStatus(gameId, { text: "存在冲突", tone: "warn" });
         setNet("degraded", "检测到同步冲突，等待处理");
+        setSaveSyncStatus(gameId, "conflict", updated.lastSync?.message || "检测到同步冲突，等待处理");
         if (!conflictChoice) {
           const choice = await conflictDialog(updated.lastSync?.message, { gameName: game.name });
           if (choice) return actions.syncGame(gameId, choice);
         }
         // 用户取消或后端未能解决冲突：清理挂起状态，避免卡片常驻异常状态。
-        setRuntimeStatus(gameId, null);
-        setNet("online", "");
+        if (!restorePendingCoverStatus(gameId)) setRuntimeStatus(gameId, null);
         return "conflict";
       }
       if (syncStatus === "unconfigured" || syncStatus === "disabled") {
-        setRuntimeStatus(gameId, null);
-        setNet("online", "");
+        setSaveSyncStatus(gameId, null);
+        if (!restorePendingCoverStatus(gameId)) setRuntimeStatus(gameId, null);
         toast(syncStatus === "unconfigured" ? "当前设备未配置存档目录" : "该游戏已禁用存档同步", "info");
         return syncStatus;
       }
       if (syncStatus === "failed") {
-        setRuntimeStatus(gameId, null);
+        if (!restorePendingCoverStatus(gameId)) setRuntimeStatus(gameId, null);
         setNet("degraded", updated?.lastSync?.message || "同步失败");
+        setSaveSyncStatus(gameId, "failed", updated?.lastSync?.message || "同步失败");
         toast(updated?.lastSync?.message || "同步失败", "err");
         return "failed";
       }
-      setRuntimeStatus(gameId, { text: "同步完成", tone: "success" });
-      setNet("online", "同步完成");
+      setSaveSyncStatus(gameId, "succeeded", "同步完成");
+      if (!restorePendingCoverStatus(gameId)) setRuntimeStatus(gameId, { text: "同步完成", tone: "success" });
       window.setTimeout(() => {
-        if (state.runtimeStatus[gameId]?.tone === "success") setRuntimeStatus(gameId, null);
+        if (state.syncTasks.saves[gameId]?.status === "succeeded") setSaveSyncStatus(gameId, null);
+        if (!hasPendingCover(gameId) && state.runtimeStatus[gameId]?.tone === "success") setRuntimeStatus(gameId, null);
       }, 3000);
       return "success";
     } catch (e) {
-      setRuntimeStatus(gameId, null);
-      setNet("offline", errMsg(e));
+      if (!restorePendingCoverStatus(gameId)) setRuntimeStatus(gameId, null);
+      setCatalogSyncStatus("offline", errMsg(e));
+      setSaveSyncStatus(gameId, "failed", errMsg(e));
       toast(`同步失败：${errMsg(e)}`, "err");
       return "failed";
     }
@@ -244,6 +319,7 @@ const actions = {
     if (state.syncingAll) return { busy: true, results: [], incomplete: [] };
     state.syncingAll = true;
     setNet("syncing", "正在同步游戏库…");
+    for (const game of select.games()) setSaveSyncStatus(game.id, "syncing", `正在同步 ${game.name}`);
     notify();
     let batch = null;
     let results = [];
@@ -251,6 +327,16 @@ const actions = {
     try {
       batch = await api.RunSyncAll();
       if (batch?.snapshot) applySnapshot(batch.snapshot);
+      setCatalogSyncStatus(
+        batch?.catalog?.status === "failed" ? "offline" : "succeeded",
+        batch?.catalog?.message || (batch?.catalog?.status === "failed" ? "游戏库目录同步失败" : "云端目录已同步"),
+      );
+      for (const cover of Array.isArray(batch?.covers) ? batch.covers : []) {
+        setCoverSyncStatus({
+          ...cover,
+          status: cover?.status === "uploaded" ? "succeeded" : cover?.status,
+        });
+      }
       results = (Array.isArray(batch?.saves) ? batch.saves : []).map((result) => {
         const game = select.game(result?.gameId);
         const status = SAVE_RESULT_STATUSES.has(result?.status) ? result.status : "failed";
@@ -292,7 +378,8 @@ const actions = {
         conflicts: 0,
       };
       results = [failed];
-      setNet("offline", failed.message);
+      for (const gameId of Object.keys(state.syncTasks.saves)) setSaveSyncStatus(gameId, null);
+      setCatalogSyncStatus("offline", failed.message);
       toast(`同步失败：${failed.message}`, "err");
     } finally {
       state.syncingAll = false;
@@ -302,18 +389,27 @@ const actions = {
     for (const result of results) {
       if (!result.gameId) continue;
       if (result.status === "success") {
-        setRuntimeStatus(result.gameId, { text: "同步完成", tone: "success" });
+        setSaveSyncStatus(result.gameId, "succeeded", result.message || "同步完成");
+        if (!restorePendingCoverStatus(result.gameId)) {
+          setRuntimeStatus(result.gameId, { text: "同步完成", tone: "success" });
+        }
         window.setTimeout(() => {
-          if (state.runtimeStatus[result.gameId]?.tone === "success") setRuntimeStatus(result.gameId, null);
+          if (state.syncTasks.saves[result.gameId]?.status === "succeeded") setSaveSyncStatus(result.gameId, null);
+          if (!hasPendingCover(result.gameId) && state.runtimeStatus[result.gameId]?.tone === "success") {
+            setRuntimeStatus(result.gameId, null);
+          }
         }, 3000);
       } else if (result.status === "conflict") {
+        setSaveSyncStatus(result.gameId, "conflict", result.message || "存在冲突");
         if (!clearedConflictIds.has(result.gameId)) {
-          setRuntimeStatus(result.gameId, { text: "存在冲突", tone: "warn" });
+          if (!restorePendingCoverStatus(result.gameId)) setRuntimeStatus(result.gameId, { text: "存在冲突", tone: "warn" });
         }
       } else if (result.status === "failed") {
-        setRuntimeStatus(result.gameId, { text: "同步失败", tone: "warn" });
+        setSaveSyncStatus(result.gameId, "failed", result.message || "同步失败");
+        if (!restorePendingCoverStatus(result.gameId)) setRuntimeStatus(result.gameId, { text: "同步失败", tone: "warn" });
       } else {
-        setRuntimeStatus(result.gameId, null);
+        setSaveSyncStatus(result.gameId, null);
+        if (!restorePendingCoverStatus(result.gameId)) setRuntimeStatus(result.gameId, null);
       }
     }
 
@@ -580,8 +676,12 @@ const actions = {
     api.onEvent("sync:progress", (p) => {
       if (!p?.message) return;
       setNet("syncing", p.message);
-      if (p.gameId) setRuntimeStatus(p.gameId, { text: p.message, tone: "syncing" });
+      if (p.gameId) {
+        setSaveSyncStatus(p.gameId, "syncing", p.message);
+        setRuntimeStatus(p.gameId, { text: p.message, tone: "syncing" });
+      }
     });
+    api.onEvent("cover:sync_state", (p) => setCoverSyncStatus(p));
     api.onEvent("cover:warning", (p) => {
       if (p?.message) toast(p.message, "warn");
     });
@@ -604,10 +704,10 @@ const actions = {
       notify();
     });
     api.onEvent("catalog:sync_state", (p) => {
-      setNet(p?.status || "checking", p?.message || "");
+      setCatalogSyncStatus(p?.status || "checking", p?.message || "");
     });
     api.onEvent("catalog:sync_failed", (p) => {
-      setNet("offline", "后台上传失败");
+      setCatalogSyncStatus("offline", p?.message || "后台上传失败");
       // 后台失败会自动重试并反复上报，同一错误 5 分钟内只提示一次
       const msg = p?.message || "未知错误";
       const now = Date.now();

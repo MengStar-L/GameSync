@@ -266,17 +266,13 @@ export function mount(root, ctx) {
         // 说明横幅与角色小字随 provider 切换，文本节点复用
         const bannerFor = () =>
           provider === "webdav"
-            ? primaryForm
-              ? "WebDAV 主账号会把目录索引与存档对象都存进服务器上的指定目录，建议使用应用专用密码。"
-              : "WebDAV 副账号作为纯存储节点接入，存档对象写入服务器上的指定目录。"
+            ? "WebDAV 主同步空间会把目录索引与存档对象都存进服务器上的指定目录，建议使用应用专用密码。"
             : primaryForm
               ? "主账号除 R2 凭据外，还需要 API Token 与 D1 Database ID，用于承载游戏目录索引。"
               : "副账号只需填写 R2 凭据，作为纯存储节点接入。";
         const roleSubFor = () =>
           provider === "webdav"
-            ? primaryForm
-              ? "主账号 · WebDAV 目录索引"
-              : "副账号 · WebDAV 存储节点"
+            ? "主同步空间 · WebDAV"
             : primaryForm
               ? "主账号 · D1 索引中心"
               : "副账号 · 存储节点";
@@ -827,7 +823,7 @@ export function mount(root, ctx) {
         h(
           "div",
           { class: "acc-name-row" },
-          h("h3", { class: "acc-name" }, acc.name || "未命名账号"),
+          h("h3", { class: "acc-name" }, webdav && acc.isPrimary ? "主空间" : acc.name || "未命名账号"),
           h(
             "div",
             { class: "acc-badges" },
@@ -919,7 +915,7 @@ export function mount(root, ctx) {
             "button",
             { class: "btn btn-sm btn-danger", onClick: () => store.actions.deleteAccount(acc.id) },
             iconEl("trash"),
-            "删除",
+            webdav ? "断开" : "删除",
           ),
         ),
       ),
@@ -929,11 +925,13 @@ export function mount(root, ctx) {
   /* ---------------- 页面渲染 ---------------- */
 
   function render() {
-    const accounts = store.select.accounts();
+    const allAccounts = store.select.accounts();
+    const primary = allAccounts.find((account) => account.isPrimary);
+    const webdavMode = Boolean(primary && isWebdav(primary));
+    const accounts = webdavMode ? [primary] : allAccounts;
     root.innerHTML = "";
 
     // 当前主账号：头部徽章展示存储方式，存在时才提供「切换存储方式」入口
-    const primary = accounts.find((a) => a.isPrimary);
 
     const page = h("div", { class: "page acc-page" });
     page.append(
@@ -947,7 +945,9 @@ export function mount(root, ctx) {
           h(
             "p",
             { class: "acc-sub" },
-            "第一个账号为主账号，承载云端目录索引；其余为存储副账号，仅提供存储空间。",
+            webdavMode
+              ? "当前 WebDAV 地址与根目录共同构成唯一同步空间；更换空间请使用“切换存储方式”。"
+              : "第一个账号为主账号，承载云端目录索引；其余为 Cloudflare 存储副账号。",
           ),
         ),
         h(
@@ -964,12 +964,14 @@ export function mount(root, ctx) {
           primary
             ? h("button", { class: "btn", onClick: () => startSwitch() }, iconEl("refresh"), "切换存储方式")
             : null,
-          h(
-            "button",
-            { class: "btn btn-primary", onClick: () => openForm(null, ctx.params?.provider) },
-            iconEl("plus"),
-            "添加账号",
-          ),
+          webdavMode
+            ? null
+            : h(
+                "button",
+                { class: "btn btn-primary", onClick: () => openForm(null, ctx.params?.provider) },
+                iconEl("plus"),
+                "添加账号",
+              ),
         ),
       ),
     );

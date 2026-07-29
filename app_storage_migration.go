@@ -87,6 +87,7 @@ func (a *App) followCommittedStorageHandoffs() error {
 		if err != nil {
 			return err
 		}
+		sourceRemote, sourceCredentials = normalizeRemoteCatalogForMerge(sourceRemote, sourceCredentials)
 		sourceRemote, failures := decryptCatalogCredentials(sourceRemote, sourceCredentials, a.recoveryPassword)
 		if credentialErr := failures[handoff.TargetAccountID]; credentialErr != nil {
 			return fmt.Errorf("%w: %v", errPendingStorageHandoff, credentialErr)
@@ -114,6 +115,7 @@ func (a *App) followCommittedStorageHandoffs() error {
 		if err != nil {
 			return err
 		}
+		targetRemote, targetCredentials = normalizeRemoteCatalogForMerge(targetRemote, targetCredentials)
 		if targetRemote.Handoff != nil && targetRemote.Handoff.TransactionID == handoff.TransactionID && targetRemote.Handoff.Generation == handoff.Generation && targetRemote.Handoff.State == core.StorageHandoffPrepared {
 			if err := targetCatalog.SaveStorageHandoffIfGeneration(a.syncContext(), handoff, handoff.Generation); err != nil {
 				return fmt.Errorf("%w: %v", errPendingStorageHandoff, err)

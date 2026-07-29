@@ -84,6 +84,14 @@ func TestDeviceIndexStoreGameLifecycle(t *testing.T) {
 	if updated.Cover != cover {
 		t.Fatalf("cover = %+v", updated.Cover)
 	}
+	if err := store.RepointAccountIDs(map[string]string{"account-1": "webdav-stable"}); err != nil {
+		t.Fatal(err)
+	}
+	cover.AccountID = "webdav-stable"
+	updated, _ = store.Game("game-1")
+	if updated.Cover != cover {
+		t.Fatalf("repointed cover = %+v", updated.Cover)
+	}
 
 	clone := store.Clone()
 	clone.Games["game-1"] = DeviceGameIndex{}

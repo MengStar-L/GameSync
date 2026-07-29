@@ -2,9 +2,31 @@ package main
 
 import (
 	"strings"
+	"time"
 
 	"gamesync/internal/core"
 )
+
+func normalizeRemoteCatalogForMerge(catalog core.RemoteCatalog, encrypted map[string]core.EncryptedCredentialBlob) (core.RemoteCatalog, map[string]core.EncryptedCredentialBlob) {
+	normalized, aliases := core.NormalizeRemoteCatalogWebdavIdentities(catalog, time.Now())
+	if len(aliases) == 0 {
+		return normalized, encrypted
+	}
+	credentials := make(map[string]core.EncryptedCredentialBlob, len(encrypted))
+	for id, blob := range encrypted {
+		if aliases[id] == "" {
+			credentials[id] = blob
+		}
+	}
+	for id, blob := range encrypted {
+		if replacement := aliases[id]; replacement != "" {
+			if _, exists := credentials[replacement]; !exists {
+				credentials[replacement] = blob
+			}
+		}
+	}
+	return normalized, credentials
+}
 
 func encryptCatalogCredentials(accounts []core.CloudflareAccount, password string) (map[string]core.EncryptedCredentialBlob, error) {
 	encrypted := make(map[string]core.EncryptedCredentialBlob, len(accounts))

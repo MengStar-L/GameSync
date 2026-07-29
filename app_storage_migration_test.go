@@ -284,6 +284,9 @@ func TestStorageMigrationCopiesAllObjectsAndCommitsBothEnds(t *testing.T) {
 	if err != nil || core.AccountProvider(primary) != core.ProviderWebdav {
 		t.Fatalf("primary = %+v, %v", primary, err)
 	}
+	if primary.LastError != "" || primary.VerificationState != "valid" {
+		t.Fatalf("migrated WebDAV primary retained an error: %+v", primary)
+	}
 	if state.StorageMigration != nil || state.StorageGeneration != 1 {
 		t.Fatalf("migration was not finalized: %+v", state.StorageMigration)
 	}

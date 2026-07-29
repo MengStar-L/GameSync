@@ -26,48 +26,54 @@ import (
 )
 
 type App struct {
-	ctx               context.Context
-	store             *core.Store
-	engine            *core.Engine
-	recoveryPassword  string
-	baseDir           string
-	savedWindowState  windowState
-	windowStateLoaded bool
-	tray              trayController
-	windowIconMu      sync.Mutex
-	windowIconCleanup func()
-	catalogSyncMu     sync.Mutex
-	catalogSyncTimer  *time.Timer
-	catalogRetryTimer *time.Timer
-	catalogSyncActive bool
-	catalogSyncQueued bool
-	lastSyncError     string
-	lastSyncErrorAt   time.Time
-	deleteQueueOnce   sync.Once
-	deleteGameMu      sync.Mutex
-	deleteGameQueue   chan queuedGameDelete
-	deleteGamePending map[string]queuedGameDelete
-	backupUploadOnce  sync.Once
-	backupUploadMu    sync.Mutex
-	backupUploadQueue chan queuedBackupUpload
-	backupUploadSet   map[string]queuedBackupUpload
-	backupDeleteOnce  sync.Once
-	backupDeleteMu    sync.Mutex
-	backupDeleteQueue chan queuedBackupDelete
-	backupDeleteSet   map[string]queuedBackupDelete
-	syncCoordinatorMu sync.Mutex
-	syncInfraMu       sync.Mutex
-	deviceIndex       *core.DeviceIndexStore
-	saveChangeTracker *core.SaveChangeTracker
-	syncGameMu        sync.Mutex
-	syncGameLocks     map[string]*sync.Mutex
-	switchStorageMu   sync.Mutex
-	switchStorageBusy bool
-	remoteOpsMu       sync.RWMutex
-	handoffMu         sync.Mutex
-	catalogStoreFn    func(core.CloudflareAccount) (core.CatalogStore, error)
-	objectStoreFn     func(context.Context, core.CloudflareAccount) (core.ObjectStore, error)
-	verifyStorageFn   func(context.Context, core.CloudflareAccount) (core.CloudflareAccount, error)
+	ctx                context.Context
+	store              *core.Store
+	engine             *core.Engine
+	recoveryPassword   string
+	baseDir            string
+	savedWindowState   windowState
+	windowStateLoaded  bool
+	tray               trayController
+	windowIconMu       sync.Mutex
+	windowIconCleanup  func()
+	catalogSyncMu      sync.Mutex
+	catalogSyncTimer   *time.Timer
+	catalogRetryTimer  *time.Timer
+	catalogSyncActive  bool
+	catalogSyncQueued  bool
+	lastSyncError      string
+	lastSyncErrorAt    time.Time
+	coverRetryMu       sync.Mutex
+	coverRetryTimers   map[string]*time.Timer
+	coverRetryAttempts map[string]int
+	coverRetryDelayFn  func(int) time.Duration
+	coverRetryStopped  bool
+	runtimeEventFn     func(string, any)
+	deleteQueueOnce    sync.Once
+	deleteGameMu       sync.Mutex
+	deleteGameQueue    chan queuedGameDelete
+	deleteGamePending  map[string]queuedGameDelete
+	backupUploadOnce   sync.Once
+	backupUploadMu     sync.Mutex
+	backupUploadQueue  chan queuedBackupUpload
+	backupUploadSet    map[string]queuedBackupUpload
+	backupDeleteOnce   sync.Once
+	backupDeleteMu     sync.Mutex
+	backupDeleteQueue  chan queuedBackupDelete
+	backupDeleteSet    map[string]queuedBackupDelete
+	syncCoordinatorMu  sync.Mutex
+	syncInfraMu        sync.Mutex
+	deviceIndex        *core.DeviceIndexStore
+	saveChangeTracker  *core.SaveChangeTracker
+	syncGameMu         sync.Mutex
+	syncGameLocks      map[string]*sync.Mutex
+	switchStorageMu    sync.Mutex
+	switchStorageBusy  bool
+	remoteOpsMu        sync.RWMutex
+	handoffMu          sync.Mutex
+	catalogStoreFn     func(core.CloudflareAccount) (core.CatalogStore, error)
+	objectStoreFn      func(context.Context, core.CloudflareAccount) (core.ObjectStore, error)
+	verifyStorageFn    func(context.Context, core.CloudflareAccount) (core.CloudflareAccount, error)
 }
 
 type queuedGameDelete struct {
@@ -167,21 +173,26 @@ const (
 	msgStorageSwitchUploading           = "正在同步「%s」的存档 (%d/%d)..."
 	msgStorageSwitchDone                = "存储切换完成"
 	msgStorageSwitchDoneWithFailures    = "存储切换完成，但以下游戏未完成首次同步：%s；可稍后在游戏库继续同步"
+	msgWebdavInitialPullRequired        = "WebDAV 云端目录尚未完成首次拉取；本地内容已保留，将在连接恢复后重试"
+	msgWebdavDifferentNamespace         = "已接入一个 WebDAV 同步空间；如需更改服务器地址或根目录，请使用“切换存储方式”"
 )
 
 func NewApp() *App {
 	return &App{
-		engine:            core.NewEngine(),
-		deleteGameQueue:   make(chan queuedGameDelete, 16),
-		deleteGamePending: make(map[string]queuedGameDelete),
-		backupUploadQueue: make(chan queuedBackupUpload, 32),
-		backupUploadSet:   make(map[string]queuedBackupUpload),
-		backupDeleteQueue: make(chan queuedBackupDelete, 32),
-		backupDeleteSet:   make(map[string]queuedBackupDelete),
-		syncGameLocks:     make(map[string]*sync.Mutex),
-		catalogStoreFn:    newCatalogStore,
-		objectStoreFn:     newObjectStore,
-		verifyStorageFn:   verifyStorageAccount,
+		engine:             core.NewEngine(),
+		deleteGameQueue:    make(chan queuedGameDelete, 16),
+		deleteGamePending:  make(map[string]queuedGameDelete),
+		backupUploadQueue:  make(chan queuedBackupUpload, 32),
+		backupUploadSet:    make(map[string]queuedBackupUpload),
+		backupDeleteQueue:  make(chan queuedBackupDelete, 32),
+		backupDeleteSet:    make(map[string]queuedBackupDelete),
+		syncGameLocks:      make(map[string]*sync.Mutex),
+		coverRetryTimers:   make(map[string]*time.Timer),
+		coverRetryAttempts: make(map[string]int),
+		coverRetryDelayFn:  coverRetryDelay,
+		catalogStoreFn:     newCatalogStore,
+		objectStoreFn:      newObjectStore,
+		verifyStorageFn:    verifyStorageAccount,
 	}
 }
 
@@ -203,8 +214,15 @@ func (a *App) startup(ctx context.Context) {
 	if err := a.startTray(); err != nil {
 		wailsruntime.LogErrorf(ctx, "start tray failed: %v", err)
 	}
-	if a.store != nil && a.store.HasPendingCatalogSync() {
-		a.queueRemoteCatalogSync("startup pending")
+	if a.store != nil {
+		state := a.store.Snapshot()
+		needsInitialWebdavPull := false
+		if primary, err := findPrimaryAccount(state); err == nil {
+			needsInitialWebdavPull = core.AccountProvider(primary) == core.ProviderWebdav && !state.CatalogSync.InitialPullCompleted
+		}
+		if a.store.HasPendingCatalogSync() || needsInitialWebdavPull {
+			a.queueRemoteCatalogSync("startup pending")
+		}
 	}
 	// 上传/删除队列为纯内存队列，重启后从注册表重入未完成任务（M9）
 	go a.requeuePendingBackupOperations()
@@ -296,6 +314,7 @@ func (a *App) domReady(ctx context.Context) {
 func (a *App) shutdown(ctx context.Context) {
 	a.ctx = ctx
 	a.closeSyncTracking()
+	a.stopCoverRetries()
 	if err := a.saveCurrentWindowState(); err != nil {
 		wailsruntime.LogErrorf(ctx, "save window state failed: %v", err)
 	}
@@ -388,9 +407,50 @@ func (a *App) SaveAccount(account core.CloudflareAccount) (core.DashboardSnapsho
 	if err != nil {
 		return core.DashboardSnapshot{}, err
 	}
+	state := a.store.Snapshot()
+	if core.AccountProvider(account) == core.ProviderWebdav {
+		normalized, normalizeErr := core.NormalizeWebdavAccount(account)
+		if normalizeErr != nil {
+			finish()
+			return core.DashboardSnapshot{}, normalizeErr
+		}
+		account = normalized
+		if len(state.Accounts) > 0 {
+			matchingNamespace := false
+			for _, existing := range state.Accounts {
+				if core.AccountProvider(existing) == core.ProviderWebdav && existing.ID == account.ID {
+					matchingNamespace = true
+					break
+				}
+			}
+			if !matchingNamespace {
+				finish()
+				return core.DashboardSnapshot{}, errors.New(msgWebdavDifferentNamespace)
+			}
+		}
+	} else if primary, ok := a.store.PrimaryAccount(); ok && core.AccountProvider(primary) == core.ProviderWebdav {
+		matchingAccount := false
+		for _, existing := range state.Accounts {
+			if existing.ID == strings.TrimSpace(account.ID) {
+				matchingAccount = true
+				break
+			}
+		}
+		if !matchingAccount {
+			finish()
+			return core.DashboardSnapshot{}, errors.New(msgWebdavDifferentNamespace)
+		}
+	}
+	firstWebdavAccount := len(state.Accounts) == 0 && core.AccountProvider(account) == core.ProviderWebdav
 	if _, err := a.store.UpsertAccount(account); err != nil {
 		finish()
 		return core.DashboardSnapshot{}, err
+	}
+	if firstWebdavAccount {
+		if err := a.store.ResetCatalogInitialPull(); err != nil {
+			finish()
+			return core.DashboardSnapshot{}, err
+		}
 	}
 	finish()
 	a.queueRemoteCatalogSync("account save")
@@ -459,6 +519,7 @@ func (a *App) restoreFromPrimary(password string, verifyAfter bool) (core.Dashbo
 		})
 		return core.DashboardSnapshot{}, err
 	}
+	catalog, encrypted = normalizeRemoteCatalogForMerge(catalog, encrypted)
 
 	catalog, failures := prepareCatalogForOrdinaryMerge(a.store.Snapshot(), catalog, encrypted, password)
 	if len(failures) > 0 {
@@ -468,6 +529,9 @@ func (a *App) restoreFromPrimary(password string, verifyAfter bool) (core.Dashbo
 	}
 
 	if err := a.store.MergeRemoteCatalog(catalog); err != nil {
+		return core.DashboardSnapshot{}, err
+	}
+	if err := a.store.MarkCatalogInitialPullCompleted(); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
 	_ = a.store.SetRecoveryStatus(func(status *core.RecoveryStatus) {
@@ -3026,6 +3090,9 @@ func (a *App) syncRemoteCatalog() error {
 		if err != nil {
 			return err
 		}
+		if core.AccountProvider(primary) == core.ProviderWebdav && !state.CatalogSync.InitialPullCompleted {
+			return errors.New(msgWebdavInitialPullRequired)
+		}
 		catalogStore, err := a.catalogStoreFor(primary)
 		if err != nil {
 			_ = a.store.SetRecoveryStatus(func(status *core.RecoveryStatus) {
@@ -3105,6 +3172,7 @@ func (a *App) syncRemoteCatalog() error {
 		if err != nil {
 			return err
 		}
+		catalog, encrypted = normalizeRemoteCatalogForMerge(catalog, encrypted)
 		catalog, _ = prepareCatalogForOrdinaryMerge(a.store.Snapshot(), catalog, encrypted, a.recoveryPassword)
 		before := catalogStateFingerprint(a.store.Snapshot())
 		if err := a.store.MergeRemoteCatalog(catalog); err != nil {
@@ -3122,7 +3190,9 @@ func (a *App) syncRemoteCatalog() error {
 		if !localCatalogAheadOfRemote(merged, catalog) {
 			return nil
 		}
-		wailsruntime.LogWarningf(a.ctx, "catalog push round %d lost fields to row-level guard, repushing", round+1)
+		if a.ctx != nil {
+			wailsruntime.LogWarningf(a.ctx, "catalog push round %d lost fields to row-level guard, repushing", round+1)
+		}
 	}
 
 	// 多轮仍未收敛：保持 dirty，稍后整轮重试
@@ -3130,7 +3200,9 @@ func (a *App) syncRemoteCatalog() error {
 		return err
 	}
 	a.scheduleCatalogRetry(30*time.Second, "catalog convergence")
-	wailsruntime.LogWarningf(a.ctx, "catalog did not converge after %d push rounds, retry scheduled", maxPushRounds)
+	if a.ctx != nil {
+		wailsruntime.LogWarningf(a.ctx, "catalog did not converge after %d push rounds, retry scheduled", maxPushRounds)
+	}
 	return nil
 }
 
@@ -3414,7 +3486,7 @@ func (a *App) pullRemoteCatalog() (bool, error) {
 		return false, err
 	}
 	remoteRevision, revisionErr := catalogStore.LoadCatalogRevision(a.syncContext())
-	if revisionErr == nil && remoteRevision > 0 && remoteRevision == a.store.LastKnownCatalogRevision() && !a.store.HasPendingCatalogSync() {
+	if state.CatalogSync.InitialPullCompleted && revisionErr == nil && remoteRevision > 0 && remoteRevision == a.store.LastKnownCatalogRevision() && !a.store.HasPendingCatalogSync() {
 		return false, nil
 	}
 	catalog, encrypted, err := catalogStore.LoadRemoteCatalog(a.syncContext())
@@ -3424,9 +3496,13 @@ func (a *App) pullRemoteCatalog() (bool, error) {
 		})
 		return false, err
 	}
+	catalog, encrypted = normalizeRemoteCatalogForMerge(catalog, encrypted)
 	catalog, _ = prepareCatalogForOrdinaryMerge(state, catalog, encrypted, a.recoveryPassword)
 	before := catalogStateFingerprint(state)
 	if err := a.store.MergeRemoteCatalog(catalog); err != nil {
+		return false, err
+	}
+	if err := a.store.MarkCatalogInitialPullCompleted(); err != nil {
 		return false, err
 	}
 	changed := catalogStateFingerprint(a.store.Snapshot()) != before
@@ -3509,16 +3585,17 @@ func (a *App) syncContext() context.Context {
 }
 
 func (a *App) emitSyncProgress(gameID string, message string) {
-	if a.ctx == nil {
-		return
-	}
-	wailsruntime.EventsEmit(a.ctx, "sync:progress", map[string]string{
+	a.emitRuntimeEvent("sync:progress", map[string]string{
 		"gameId":  gameID,
 		"message": message,
 	})
 }
 
 func (a *App) emitRuntimeEvent(name string, payload any) {
+	if a.runtimeEventFn != nil {
+		a.runtimeEventFn(name, payload)
+		return
+	}
 	if a.ctx == nil {
 		return
 	}
