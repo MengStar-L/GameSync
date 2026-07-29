@@ -174,6 +174,9 @@ func (s *Store) normalizeWebdavAccountsLocked(now time.Time) map[string]string {
 			}
 		}
 	}
+	if s.repairCoverReferencesLocked() {
+		changed = true
+	}
 	for _, account := range s.state.Accounts {
 		delete(s.state.Tombstones.Accounts, account.ID)
 	}
@@ -229,6 +232,46 @@ func repointedAccountID(value string, aliases map[string]string) string {
 	return value
 }
 
+func repointedCoverReference(value string, aliases map[string]string) string {
+	trimmed := strings.TrimSpace(value)
+	parsed, err := url.Parse(trimmed)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "r2cover") {
+		return value
+	}
+	replacement := aliases[strings.TrimSpace(parsed.Host)]
+	if replacement == "" {
+		return value
+	}
+	parsed.Host = replacement
+	return parsed.String()
+}
+
+func canonicalCoverReference(value string, accountID string, objectKey string) string {
+	accountID = strings.TrimSpace(accountID)
+	objectKey = strings.Trim(strings.TrimSpace(objectKey), "/")
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "r2cover") || accountID == "" || objectKey == "" {
+		return value
+	}
+	if strings.Trim(strings.TrimSpace(parsed.Path), "/") != objectKey || strings.TrimSpace(parsed.Host) == accountID {
+		return value
+	}
+	parsed.Host = accountID
+	return parsed.String()
+}
+
+func repairGameCoverReferences(game *Game) bool {
+	if game == nil {
+		return false
+	}
+	coverPath := canonicalCoverReference(game.CoverPath, game.CoverCloudAccountID, game.CoverCloudKey)
+	coverSource := canonicalCoverReference(game.CoverSource, game.CoverCloudAccountID, game.CoverCloudKey)
+	changed := coverPath != game.CoverPath || coverSource != game.CoverSource
+	game.CoverPath = coverPath
+	game.CoverSource = coverSource
+	return changed
+}
+
 func repointGameAccountReferences(game *Game, aliases map[string]string) {
 	if game == nil {
 		return
@@ -237,6 +280,8 @@ func repointGameAccountReferences(game *Game, aliases map[string]string) {
 	game.AutoBackupAccountID = repointedAccountID(game.AutoBackupAccountID, aliases)
 	game.BackupStorageAccountID = repointedAccountID(game.BackupStorageAccountID, aliases)
 	game.CoverCloudAccountID = repointedAccountID(game.CoverCloudAccountID, aliases)
+	game.CoverPath = repointedCoverReference(game.CoverPath, aliases)
+	game.CoverSource = repointedCoverReference(game.CoverSource, aliases)
 	game.Anchor.StorageAccountID = repointedAccountID(game.Anchor.StorageAccountID, aliases)
 	for filename, accountID := range game.BackupLocations {
 		game.BackupLocations[filename] = repointedAccountID(accountID, aliases)
@@ -267,6 +312,19 @@ func (s *Store) repointAccountReferencesLocked(aliases map[string]string) {
 			repointGameAccountReferences(&migration.TargetGames[index], aliases)
 		}
 	}
+}
+
+func (s *Store) repairCoverReferencesLocked() bool {
+	changed := false
+	for index := range s.state.Games {
+		changed = repairGameCoverReferences(&s.state.Games[index]) || changed
+	}
+	if migration := s.state.StorageMigration; migration != nil {
+		for index := range migration.TargetGames {
+			changed = repairGameCoverReferences(&migration.TargetGames[index]) || changed
+		}
+	}
+	return changed
 }
 
 func (s *Store) rememberAccountAliasesLocked(aliases map[string]string) {

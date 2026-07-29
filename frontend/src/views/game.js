@@ -311,7 +311,7 @@ export function mount(root, ctx) {
 
     const main = h("div", { class: "gd-hero-main" });
     const rt = isNew ? null : store.select.runtimeStatus(gameId);
-    if (rt) main.append(h("span", { class: `gd-status ${rt.tone}` }, h("span", { class: "gd-status-dot" }), rt.text));
+    if (rt) main.append(h("span", { class: `gd-status ${rt.tone}`, title: rt.detail || rt.text || "" }, h("span", { class: "gd-status-dot" }), rt.text));
 
     main.append(h("h1", { class: "gd-title" }, isNew ? "添加游戏" : live?.name || "未命名游戏"));
     main.append(buildBadges());

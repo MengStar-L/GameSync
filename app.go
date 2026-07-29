@@ -2080,11 +2080,25 @@ func inferCoverSource(coverPath string, coverSourceType string, coverSource stri
 }
 
 func (a *App) ensureCoverCached(game core.Game, existing *core.Game) (string, string, error) {
-	if !coverSourceChanged(game, existing) && !strings.EqualFold(strings.TrimSpace(game.CoverSourceType), coverSourceLocalFile) {
+	if !coverSourceChanged(game, existing) {
 		if cachedPath := a.locateCoverCache(game); cachedPath != "" {
-			mimeType, err := detectFileMimeType(cachedPath)
-			if err == nil {
-				return cachedPath, mimeType, nil
+			sourceIsLocalFile := strings.EqualFold(strings.TrimSpace(game.CoverSourceType), coverSourceLocalFile)
+			localSourceIsReference := sourceIsLocalFile && isCoverReference(firstNonEmpty(game.CoverSource, game.CoverPath))
+			fresh := !sourceIsLocalFile
+			repairMetadata := false
+			if localSourceIsReference {
+				fresh, repairMetadata = coverCacheFreshnessForGame(game, cachedPath)
+			}
+			if fresh {
+				mimeType, err := detectFileMimeType(cachedPath)
+				if err == nil {
+					if repairMetadata {
+						if metadataErr := a.writeCoverCacheMetadata(game, cachedPath); metadataErr != nil && a.ctx != nil {
+							wailsruntime.LogWarningf(a.ctx, "repair cover cache metadata failed for %s: %v", game.ID, metadataErr)
+						}
+					}
+					return cachedPath, mimeType, nil
+				}
 			}
 		}
 	}

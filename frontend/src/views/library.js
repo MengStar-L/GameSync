@@ -190,13 +190,13 @@ export function mount(root, ctx) {
 
   // 状态签名：变了只原地更新胶囊与快速启动按钮，不动封面
   const cardStatusSig = (rs, quickBusy) =>
-    JSON.stringify([rs?.text || "", rs?.tone || "", quickBusy]);
+    JSON.stringify([rs?.text || "", rs?.detail || "", rs?.tone || "", quickBusy]);
 
   // 运行状态胶囊：tone = playing / syncing / success / warn
   function statusPill(rs) {
     return h(
       "span",
-      { class: `lib-status ${rs.tone || "playing"} sm on-cover lib-card-status` },
+      { class: `lib-status ${rs.tone || "playing"} sm on-cover lib-card-status`, title: rs.detail || rs.text || "" },
       h("span", { class: "lib-status-text" }, rs.text || ""),
     );
   }
@@ -214,6 +214,7 @@ export function mount(root, ctx) {
       oldPill?.remove();
     } else if (oldPill) {
       oldPill.className = `lib-status ${rs.tone || "playing"} sm on-cover lib-card-status`;
+      oldPill.title = rs.detail || rs.text || "";
       oldPill.querySelector(".lib-status-text").textContent = rs.text || "";
     } else {
       coverBox.append(statusPill(rs));

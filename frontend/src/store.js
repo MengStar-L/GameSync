@@ -65,7 +65,14 @@ function setRuntimeStatus(gameId, status) {
   if (!gameId) return;
   const prev = state.runtimeStatus[gameId];
   // 相同状态不重复通知，避免高频事件反复触发视图刷新
-  if (status && prev && prev.text === status.text && prev.tone === status.tone) return;
+  if (
+    status &&
+    prev &&
+    prev.text === status.text &&
+    prev.tone === status.tone &&
+    prev.source === status.source &&
+    prev.detail === status.detail
+  ) return;
   if (!status && !prev) return;
   if (status) state.runtimeStatus[gameId] = status;
   else delete state.runtimeStatus[gameId];
@@ -113,7 +120,7 @@ function setCoverSyncStatus(payload) {
   if (status === "syncing") {
     setRuntimeStatus(gameId, { text: message || "正在同步游戏封面", tone: "syncing", source: "cover" });
   } else if (status === "pending") {
-    setRuntimeStatus(gameId, { text: "封面等待重试", tone: "warn", source: "cover" });
+    setRuntimeStatus(gameId, { text: "封面等待重试", detail: message, tone: "warn", source: "cover" });
   } else if (status === "succeeded") {
     setRuntimeStatus(gameId, { text: message || "封面同步完成", tone: "success", source: "cover" });
     window.setTimeout(() => {
@@ -133,7 +140,12 @@ function hasPendingCover(gameId) {
 
 function restorePendingCoverStatus(gameId) {
   if (!hasPendingCover(gameId)) return false;
-  setRuntimeStatus(gameId, { text: "封面等待重试", tone: "warn", source: "cover" });
+  setRuntimeStatus(gameId, {
+    text: "封面等待重试",
+    detail: state.syncTasks.covers[gameId]?.message || "",
+    tone: "warn",
+    source: "cover",
+  });
   recomputeSyncStatus();
   return true;
 }

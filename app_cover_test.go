@@ -124,6 +124,79 @@ func TestRunSyncBackfillsLegacyCoverToCurrentWebdav(t *testing.T) {
 	}
 }
 
+func TestSyncCoverUsesValidatedCacheBeforeLegacyReference(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := core.NewStore(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.UpsertAccount(core.CloudflareAccount{
+		Provider: core.ProviderWebdav, Enabled: true, IsPrimary: true,
+		WebdavURL: "https://dav.example.test", WebdavUsername: "user", WebdavPassword: "password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := filepath.Join(dataDir, "covers", "game")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(cacheDir, "cover.jpg")
+	if err := os.WriteFile(cachePath, []byte("content-addressed-cover"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := sha256FileHex(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objectKey := "covers/game/" + hash + ".jpg"
+	legacyReference := makeCoverReference("legacy-r2", objectKey)
+	game, err := store.UpsertGame(core.Game{
+		ID: "game", Name: "Game", StorageAccountID: account.ID,
+		CoverPath: legacyReference, CoverSourceType: coverSourceLocalFile, CoverSource: legacyReference,
+		CoverLocalPath: cachePath, CoverCloudAccountID: account.ID, CoverCloudKey: objectKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	app.store = store
+	app.baseDir = dataDir
+	t.Cleanup(app.stopCoverRetries)
+	remoteCalls := 0
+	app.objectStoreFn = func(context.Context, core.CloudflareAccount) (core.ObjectStore, error) {
+		remoteCalls++
+		return nil, errors.New("unexpected remote access")
+	}
+	var coverStatuses []string
+	app.runtimeEventFn = func(name string, payload any) {
+		if name == "cover:sync_state" {
+			coverStatuses = append(coverStatuses, payload.(map[string]string)["status"])
+		}
+	}
+
+	result := app.syncCoverForCoordinator(game.ID)
+	if result.Status != "skipped" || result.Message != "" {
+		t.Fatalf("cover result = %+v", result)
+	}
+	if len(coverStatuses) != 2 || coverStatuses[0] != "syncing" || coverStatuses[1] != "skipped" {
+		t.Fatalf("cover status sequence = %v", coverStatuses)
+	}
+	if remoteCalls != 0 {
+		t.Fatalf("validated local cache triggered %d remote calls", remoteCalls)
+	}
+	index, err := app.ensureDeviceIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexed, ok := index.Game(game.ID)
+	wantCover := core.DeviceCoverIndex{SourceFingerprint: hash, AccountID: account.ID, ObjectKey: objectKey}
+	if !ok || indexed.Cover != wantCover {
+		t.Fatalf("device cover index = %+v, exists=%v, want=%+v", indexed.Cover, ok, wantCover)
+	}
+}
+
 func TestSaveGameSameCoverPathContentChangeUsesNewObjectKey(t *testing.T) {
 	dataDir := t.TempDir()
 	store, err := core.NewStore(dataDir)

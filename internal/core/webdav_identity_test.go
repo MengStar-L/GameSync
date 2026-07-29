@@ -85,6 +85,9 @@ func TestNormalizeWebdavAccountsRepointsLegacyReferences(t *testing.T) {
 	store.state.Games = []Game{{
 		ID: "game", StorageAccountID: "legacy-local", AutoBackupAccountID: "legacy-remote",
 		BackupStorageAccountID: "legacy-remote", CoverCloudAccountID: "legacy-remote",
+		CoverPath:       remoteCoverReference("legacy-remote", "covers/game/hash.jpg"),
+		CoverSourceType: "local_file",
+		CoverSource:     remoteCoverReference("legacy-remote", "covers/game/hash.jpg"),
 		Anchor:          SyncAnchor{StorageAccountID: "legacy-local"},
 		BackupLocations: map[string]string{"save.zip": "legacy-remote"},
 		BackupRegistry:  []BackupRecord{{Filename: "save.zip", AccountID: "legacy-remote"}},
@@ -128,6 +131,10 @@ func TestNormalizeWebdavAccountsRepointsLegacyReferences(t *testing.T) {
 			t.Errorf("%s reference = %q, want %q", name, value, canonical.ID)
 		}
 	}
+	wantCoverReference := remoteCoverReference(canonical.ID, "covers/game/hash.jpg")
+	if game.CoverPath != wantCoverReference || game.CoverSource != wantCoverReference {
+		t.Fatalf("portable cover references = %q, %q, want %q", game.CoverPath, game.CoverSource, wantCoverReference)
+	}
 	if _, ok := store.state.Tombstones.Accounts[canonical.ID]; ok {
 		t.Fatal("canonical account was tombstoned")
 	}
@@ -136,6 +143,47 @@ func TestNormalizeWebdavAccountsRepointsLegacyReferences(t *testing.T) {
 	}
 	if _, ok := store.state.Tombstones.Accounts["legacy-remote"]; !ok {
 		t.Fatal("legacy remote ID was not tombstoned")
+	}
+}
+
+func TestNormalizeWebdavAccountsRepairsCoverReferenceAfterLegacyAccountRemoval(t *testing.T) {
+	now := time.Now()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := NormalizeWebdavAccount(CloudflareAccount{
+		Provider: ProviderWebdav, WebdavURL: "https://dav.example.test/root", WebdavRoot: "GameSync",
+		WebdavUsername: "user", WebdavPassword: "password", IsPrimary: true, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	objectKey := "covers/game/hash.jpg"
+	legacyReference := remoteCoverReference("removed-legacy-account", objectKey)
+	store.state.Accounts = []CloudflareAccount{canonical}
+	store.state.Games = []Game{{
+		ID: "game", CoverPath: legacyReference, CoverSource: legacyReference,
+		CoverCloudAccountID: canonical.ID, CoverCloudKey: objectKey,
+	}}
+	store.state.CatalogSync.Dirty = false
+
+	aliases := store.normalizeWebdavAccountsLocked(now)
+	if len(aliases) != 0 {
+		t.Fatalf("aliases = %+v, want none after legacy account removal", aliases)
+	}
+	want := remoteCoverReference(canonical.ID, objectKey)
+	game := store.state.Games[0]
+	if game.CoverPath != want || game.CoverSource != want {
+		t.Fatalf("portable cover references = %q, %q, want %q", game.CoverPath, game.CoverSource, want)
+	}
+	if !store.state.CatalogSync.Dirty {
+		t.Fatal("cover reference repair did not mark catalog dirty")
+	}
+	store.state.CatalogSync.Dirty = false
+	store.normalizeWebdavAccountsLocked(now.Add(time.Minute))
+	if store.state.CatalogSync.Dirty {
+		t.Fatal("idempotent cover reference normalization marked catalog dirty again")
 	}
 }
 
