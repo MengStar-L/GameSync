@@ -585,7 +585,7 @@ export function createMockBackend() {
     },
     async CheckForUpdates() {
       await delay(1100);
-      return { status: "update_available", currentVersion: "0.9.0", latestVersion: "1.0.0", channel: "stable", platform: "windows/amd64", notes: "· 全新 Paper Atelier 界面\n· 更快的同步引擎\n· 修复若干问题", publishedAt: nowIso(), asset: { url: "https://example.com/a.zip", sha256: "x", size: 48e6 }, message: "发现新版本" };
+      return { status: "available", currentVersion: "0.9.0", latestVersion: "1.0.0", channel: "stable", platform: "windows/amd64", notes: "· 全新 Paper Atelier 界面\n· 更快的同步引擎\n· 修复若干问题", publishedAt: nowIso(), asset: { url: "https://example.com/a.zip", sha256: "x", size: 48e6 }, message: "发现新版本" };
     },
     async DownloadUpdate(req) {
       await delay(1800);

@@ -15,6 +15,10 @@ const SECTIONS = [
   { key: "backup", label: "备份与恢复", icon: "archive" },
 ];
 
+export function isUpdateAvailable(result) {
+  return result?.status === "available";
+}
+
 export function mount(root, ctx) {
   const { store, api, ui } = ctx;
   const { h, icon, iconEl, fmtTime, toast, skeleton } = ui;
@@ -159,7 +163,7 @@ export function mount(root, ctx) {
           try {
             const res = await api.CheckForUpdates();
             if (disposed) return;
-            if (res?.status === "update_available") {
+            if (isUpdateAvailable(res)) {
               renderUpdateAvailable(res);
             } else {
               updateResult.innerHTML = "";
