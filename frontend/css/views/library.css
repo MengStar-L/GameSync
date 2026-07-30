@@ -333,6 +333,30 @@
 
 /* ---------- 封面悬浮卡片 ---------- */
 
+.lib-mode-overlay-hover .lib-card-cover,
+.lib-mode-overlay-persistent .lib-card-cover {
+  aspect-ratio: 7 / 10;
+}
+
+.lib-mode-overlay-hover .lib-card-cover .cover img,
+.lib-mode-overlay-persistent .lib-card-cover .cover img {
+  object-fit: contain;
+}
+
+.lib-mode-overlay-hover .lib-card:hover .lib-card-cover .cover img,
+.lib-mode-overlay-hover .lib-card.menu-pin .lib-card-cover .cover img,
+.lib-mode-overlay-persistent .lib-card:hover .lib-card-cover .cover img,
+.lib-mode-overlay-persistent .lib-card.menu-pin .lib-card-cover .cover img {
+  transform: none;
+}
+
+.lib-mode-overlay-hover .lib-card:hover .lib-card-cover::after,
+.lib-mode-overlay-hover .lib-card.menu-pin .lib-card-cover::after,
+.lib-mode-overlay-persistent .lib-card:hover .lib-card-cover::after,
+.lib-mode-overlay-persistent .lib-card.menu-pin .lib-card-cover::after {
+  opacity: 0;
+}
+
 .lib-mode-overlay-hover .lib-card-body,
 .lib-mode-overlay-persistent .lib-card-body {
   position: absolute;
@@ -340,10 +364,10 @@
   bottom: 0;
   left: 0;
   z-index: 3;
-  border-top: 1px solid color-mix(in srgb, white 18%, transparent);
-  background: color-mix(in srgb, #171512 72%, transparent);
+  border-top: 0;
+  background: transparent;
   color: white;
-  backdrop-filter: blur(10px) saturate(0.9);
+  backdrop-filter: none;
   transition:
     opacity var(--t-med) var(--ease),
     transform var(--t-med) var(--ease);
@@ -351,14 +375,7 @@
 
 .lib-mode-overlay-hover .lib-card-body::before,
 .lib-mode-overlay-persistent .lib-card-body::before {
-  content: "";
-  position: absolute;
-  right: 0;
-  bottom: 100%;
-  left: 0;
-  height: 44px;
-  pointer-events: none;
-  background: linear-gradient(to bottom, transparent, color-mix(in srgb, #171512 68%, transparent));
+  content: none;
 }
 
 .lib-mode-overlay-hover .lib-card-name,
@@ -372,12 +389,17 @@
 .lib-mode-overlay-hover .lib-card-name-text,
 .lib-mode-overlay-persistent .lib-card-name-text {
   color: white;
-  text-shadow: 0 1px 2px color-mix(in srgb, black 55%, transparent);
+  text-shadow:
+    0 1px 2px rgb(0 0 0 / 90%),
+    0 0 8px rgb(0 0 0 / 65%);
 }
 
 .lib-mode-overlay-hover .lib-card-sub,
 .lib-mode-overlay-persistent .lib-card-sub {
-  color: color-mix(in srgb, white 72%, transparent);
+  color: color-mix(in srgb, white 86%, transparent);
+  text-shadow:
+    0 1px 2px rgb(0 0 0 / 90%),
+    0 0 8px rgb(0 0 0 / 65%);
 }
 
 .lib-mode-overlay-hover .lib-quick,
