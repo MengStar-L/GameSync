@@ -333,9 +333,14 @@
 
 /* ---------- 封面悬浮卡片 ---------- */
 
+.lib-mode-overlay-hover .lib-card,
+.lib-mode-overlay-persistent .lib-card {
+  align-self: start;
+}
+
 .lib-mode-overlay-hover .lib-card-cover,
 .lib-mode-overlay-persistent .lib-card-cover {
-  aspect-ratio: 7 / 10;
+  aspect-ratio: var(--lib-cover-aspect, 7 / 10);
 }
 
 .lib-mode-overlay-hover .lib-card-cover .cover img,

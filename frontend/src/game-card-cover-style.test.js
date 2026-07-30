@@ -8,8 +8,9 @@ const css = readFileSync(
   "utf8",
 );
 
-test("overlay cards keep complete 7:10 covers", () => {
-  assert.match(css, /\.lib-mode-overlay-hover \.lib-card-cover,[\s\S]*?aspect-ratio: 7 \/ 10;/);
+test("overlay cards use complete natural-ratio covers with a stable fallback", () => {
+  assert.match(css, /\.lib-mode-overlay-hover \.lib-card,[\s\S]*?align-self: start;/);
+  assert.match(css, /\.lib-mode-overlay-hover \.lib-card-cover,[\s\S]*?aspect-ratio: var\(--lib-cover-aspect, 7 \/ 10\);/);
   assert.match(css, /\.lib-mode-overlay-hover \.lib-card-cover \.cover img,[\s\S]*?object-fit: contain;/);
 });
 

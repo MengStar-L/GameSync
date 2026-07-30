@@ -4,6 +4,7 @@ import {
   isCardClickSuppressed,
   normalizeGameCardMode,
 } from "../game-card-mode.js";
+import { bindNaturalCoverAspect } from "../game-card-cover-aspect.js";
 
 // ============================================================
 // views/library.js —— 游戏库主页：筛选纸签行 + 封面墙
@@ -280,16 +281,18 @@ export function mount(root, ctx) {
     const pathsUnset = noInstallPath || !g.savePath;
     const configLabel = !pathsUnset && g.sync?.enabled === false ? "存档同步已禁用" : "";
 
+    const cover = ui.coverImg(coverRef(g), "lib-card-img");
     const coverBox = h(
       "div",
       { class: "lib-card-cover" },
-      ui.coverImg(coverRef(g), "lib-card-img"),
+      cover,
       h("span", {
         class: "lib-card-platform",
         title: g.isSteam ? "Steam 游戏" : "第三方游戏",
         html: icon(g.isSteam ? "steam" : "monitor"),
       }),
     );
+    bindNaturalCoverAspect(coverBox, cover);
     if (configLabel) coverBox.append(h("span", { class: "badge mute lib-card-nopath" }, configLabel));
     const card = h(
       "article",
