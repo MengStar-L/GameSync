@@ -340,12 +340,13 @@
 
 .lib-mode-overlay-hover .lib-card-cover,
 .lib-mode-overlay-persistent .lib-card-cover {
-  aspect-ratio: var(--lib-cover-aspect, 7 / 10);
+  aspect-ratio: 7 / 10;
 }
 
 .lib-mode-overlay-hover .lib-card-cover .cover img,
 .lib-mode-overlay-persistent .lib-card-cover .cover img {
-  object-fit: contain;
+  object-fit: cover;
+  object-position: center;
 }
 
 .lib-mode-overlay-hover .lib-card:hover .lib-card-cover .cover img,
