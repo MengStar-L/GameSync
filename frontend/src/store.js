@@ -6,6 +6,7 @@
 import { api } from "./api.js";
 import { toast, confirm, conflictDialog } from "./ui.js";
 import { deriveSyncStatus } from "./sync-state.js";
+import { hasUpdateNotice, mergeUpdateCheckState } from "./update-state.js";
 
 const state = {
   snapshot: null, // DashboardSnapshot
@@ -17,6 +18,7 @@ const state = {
     covers: {},
     saves: {},
   },
+  updateCheck: { status: "idle", result: null, checkedAt: "" },
   search: "",
   libraryFilter: { kind: "all", tag: "" }, // 'all' | 'fav' | 'tag'
   pendingDeletes: new Set(), // 乐观隐藏中的游戏
@@ -89,6 +91,11 @@ function setNet(netState, message) {
   const msg = message || "";
   if (prev.state === netState && prev.message === msg) return;
   state.netStatus = { state: netState, message: msg };
+  notify();
+}
+
+function setUpdateCheckState(payload) {
+  state.updateCheck = mergeUpdateCheckState(state.updateCheck, payload);
   notify();
 }
 
@@ -205,6 +212,8 @@ const select = {
   search: () => state.search,
   libraryFilter: () => state.libraryFilter,
   syncingAll: () => state.syncingAll,
+  updateCheck: () => state.updateCheck,
+  hasUpdateNotice: () => hasUpdateNotice(state.updateCheck.result),
 
   filteredGames() {
     const q = state.search.trim().toLowerCase();
@@ -260,6 +269,17 @@ const actions = {
     if (catalog.lastError) setCatalogSyncStatus("offline", catalog.lastError);
     else if (catalog.lastSuccessAt) setCatalogSyncStatus("succeeded", "云端目录已同步");
     else if (catalog.dirty) setCatalogSyncStatus("pending", "等待连接云端");
+    try {
+      setUpdateCheckState(await api.GetUpdateCheckState());
+    } catch {
+      // 更新状态不可用时不阻塞游戏库启动，后台调度器会在后续事件中补齐。
+    }
+  },
+
+  async checkForUpdates() {
+    const result = await api.CheckForUpdates();
+    setUpdateCheckState({ status: "succeeded", result, checkedAt: new Date().toISOString() });
+    return result;
   },
 
   setSearch(q) {
@@ -667,6 +687,7 @@ const actions = {
   /* ----- 后端事件绑定（main.js 启动时调用一次） ----- */
 
   bindBackendEvents() {
+    api.onEvent("update:check_state", (payload) => setUpdateCheckState(payload));
     api.onEvent("game:started", (p) => {
       setRuntimeStatus(eventGameId(p), { text: "游戏中", tone: "playing" });
       toast("游戏已启动", "ok");

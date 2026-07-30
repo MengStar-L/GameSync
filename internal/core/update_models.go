@@ -9,10 +9,13 @@ import (
 )
 
 const (
-	UpdateStatusUnconfigured = "unconfigured"
-	UpdateStatusLatest       = "latest"
-	UpdateStatusAvailable    = "available"
-	UpdateStatusBlocked      = "blocked"
+	UpdateStatusUnconfigured  = "unconfigured"
+	UpdateStatusLatest        = "latest"
+	UpdateStatusAvailable     = "available"
+	UpdateStatusBlocked       = "blocked"
+	UpdateCheckPhaseIdle      = "idle"
+	UpdateCheckPhaseChecking  = "checking"
+	UpdateCheckPhaseSucceeded = "succeeded"
 )
 
 type UpdateManifest struct {
@@ -40,6 +43,12 @@ type UpdateCheckResult struct {
 	PublishedAt    time.Time           `json:"publishedAt,omitempty" ts_type:"string"`
 	Asset          UpdatePlatformAsset `json:"asset,omitempty"`
 	Message        string              `json:"message"`
+}
+
+type UpdateCheckState struct {
+	Status    string             `json:"status"`
+	Result    *UpdateCheckResult `json:"result,omitempty"`
+	CheckedAt *time.Time         `json:"checkedAt,omitempty" ts_type:"string"`
 }
 
 type UpdateDownloadRequest struct {

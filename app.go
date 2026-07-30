@@ -75,6 +75,14 @@ type App struct {
 	runningGameIDsFn         func([]core.Game) map[string]bool
 	runningGamesMu           sync.Mutex
 	runningGames             map[string]bool
+	updateCheckMu            sync.Mutex
+	updateCheckTimer         backgroundTimer
+	updateCheckRun           *updateCheckRun
+	updateCheckState         core.UpdateCheckState
+	updateCheckStarted       bool
+	updateCheckStopped       bool
+	updateCheckAfterFn       func(time.Duration, func()) backgroundTimer
+	updateCheckFn            func(context.Context) (core.UpdateCheckResult, error)
 	syncInfraMu              sync.Mutex
 	deviceIndex              *core.DeviceIndexStore
 	saveChangeTracker        *core.SaveChangeTracker
@@ -206,6 +214,9 @@ func NewApp() *App {
 		backgroundSyncAfterFn: func(delay time.Duration, callback func()) backgroundTimer {
 			return time.AfterFunc(delay, callback)
 		},
+		updateCheckAfterFn: func(delay time.Duration, callback func()) backgroundTimer {
+			return time.AfterFunc(delay, callback)
+		},
 		backgroundDeferredGames: make(map[string]bool),
 		runningGameIDsFn:        core.RunningGameIDs,
 		runningGames:            make(map[string]bool),
@@ -247,6 +258,7 @@ func (a *App) startup(ctx context.Context) {
 	go a.requeuePendingBackupOperations()
 	go a.verifyAccounts(false)
 	a.startBackgroundSyncScheduler()
+	a.startUpdateCheckScheduler()
 }
 
 // requeuePendingBackupOperations 启动时扫描全部游戏的 BackupRegistry：
@@ -334,6 +346,7 @@ func (a *App) domReady(ctx context.Context) {
 func (a *App) shutdown(ctx context.Context) {
 	a.ctx = ctx
 	a.stopBackgroundSyncScheduler()
+	a.stopUpdateCheckScheduler()
 	a.closeSyncTracking()
 	a.stopCoverRetries()
 	if err := a.saveCurrentWindowState(); err != nil {
@@ -383,10 +396,7 @@ func (a *App) CheckForUpdates() (core.UpdateCheckResult, error) {
 	if err := a.ensureReady(); err != nil {
 		return core.UpdateCheckResult{}, err
 	}
-	updater := core.NewUpdater(core.UpdateOptions{
-		DataDir: a.store.DataDir(),
-	})
-	return updater.Check(a.syncContext())
+	return a.runUpdateCheck(a.syncContext())
 }
 
 func (a *App) DownloadUpdate(request core.UpdateDownloadRequest) (core.UpdateDownloadResult, error) {

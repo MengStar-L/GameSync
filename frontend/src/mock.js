@@ -64,6 +64,18 @@ export function createMockBackend() {
     });
   };
 
+  const mockUpdateResult = {
+    status: "available",
+    currentVersion: "0.9.0",
+    latestVersion: "1.0.0",
+    channel: "stable",
+    platform: "windows/amd64",
+    notes: "· 全新 Paper Atelier 界面\n· 更快的同步引擎\n· 修复若干问题",
+    publishedAt: nowIso(),
+    asset: { url: "https://example.com/a.zip", sha256: "x", size: 48e6 },
+    message: "发现新版本",
+  };
+
   const state = {
     device: { id: "dev-1", name: "DESKTOP-ATELIER", platform: "windows", lastStartedAt: nowIso() },
     accounts: [
@@ -252,6 +264,9 @@ export function createMockBackend() {
     },
     async GetAppInfo() {
       return { version: "0.9.0-mock", commit: "abc1234", buildDate: nowIso(), updateChannel: "stable", updateRepo: "", updateManifestUrl: "", platform: "windows/amd64" };
+    },
+    async GetUpdateCheckState() {
+      return { status: "succeeded", result: clone(mockUpdateResult), checkedAt: nowIso() };
     },
     async ResolveCoverSource(ref) {
       await delay(90);
@@ -591,7 +606,7 @@ export function createMockBackend() {
     },
     async CheckForUpdates() {
       await delay(1100);
-      return { status: "available", currentVersion: "0.9.0", latestVersion: "1.0.0", channel: "stable", platform: "windows/amd64", notes: "· 全新 Paper Atelier 界面\n· 更快的同步引擎\n· 修复若干问题", publishedAt: nowIso(), asset: { url: "https://example.com/a.zip", sha256: "x", size: 48e6 }, message: "发现新版本" };
+      return clone(mockUpdateResult);
     },
     async DownloadUpdate(req) {
       await delay(1800);

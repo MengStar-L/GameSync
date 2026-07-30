@@ -20,6 +20,7 @@ const BINDING_NAMES = [
   "DownloadUpdate",
   "ExportAppBackup",
   "GetAppInfo",
+  "GetUpdateCheckState",
   "GetGameBackups",
   "GetRAWGGame",
   "ImportAppBackup",

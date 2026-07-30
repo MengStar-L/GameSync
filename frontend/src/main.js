@@ -45,6 +45,19 @@ const NAV_PAGES = ["library", "tags", "accounts", "activity", "settings"];
 function bindChromeNav() {
   const nav = document.getElementById("chrome-nav");
   const inkBar = document.getElementById("chrome-tab-ink");
+  const settingsTab = nav.querySelector('.chrome-tab[data-page="settings"]');
+  const updateDot = settingsTab?.querySelector(".chrome-update-dot");
+
+  const updateUpdateBadge = () => {
+    const visible = store.select.hasUpdateNotice();
+    if (updateDot) updateDot.hidden = !visible;
+    if (settingsTab) {
+      settingsTab.setAttribute("aria-label", visible ? "设置，有新版本" : "设置");
+      settingsTab.title = visible ? "发现新版本" : "";
+    }
+  };
+  store.subscribe(updateUpdateBadge);
+  updateUpdateBadge();
 
   nav.addEventListener("click", (e) => {
     const tab = e.target.closest(".chrome-tab");

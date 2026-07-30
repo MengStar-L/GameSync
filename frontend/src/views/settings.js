@@ -246,6 +246,38 @@ export function mount(root, ctx) {
     );
   }
 
+  function renderUpdateBlocked(res) {
+    updateResult.innerHTML = "";
+    updateResult.append(
+      h(
+        "div",
+        { class: "set-update-avail" },
+        h(
+          "div",
+          { class: "set-update-avail-head" },
+          h("span", { class: "set-update-glyph", html: icon("alert") }),
+          h(
+            "div",
+            { class: "set-update-avail-main" },
+            h("div", { class: "set-update-ver" }, `当前版本过旧，最新版本为 ${res.latestVersion || "未知"}`),
+            h("div", { class: "set-update-date" }, res.message || "请手动下载并安装最新版本"),
+          ),
+        ),
+      ),
+    );
+  }
+
+  let renderedUpdateKey = "";
+  function renderKnownUpdateState() {
+    const res = store.select.updateCheck()?.result;
+    const key = [res?.status, res?.latestVersion, res?.message, res?.notes, res?.asset?.url].join("|");
+    if (key === renderedUpdateKey) return;
+    renderedUpdateKey = key;
+    if (isUpdateAvailable(res)) renderUpdateAvailable(res);
+    else if (res?.status === "blocked") renderUpdateBlocked(res);
+    else updateResult.innerHTML = "";
+  }
+
   const checkBtn = h(
     "button",
     {
@@ -253,12 +285,10 @@ export function mount(root, ctx) {
       onClick: () =>
         withBusy(checkBtn, async () => {
           try {
-            const res = await api.CheckForUpdates();
+            const res = await store.actions.checkForUpdates();
             if (disposed) return;
-            if (isUpdateAvailable(res)) {
-              renderUpdateAvailable(res);
-            } else {
-              updateResult.innerHTML = "";
+            renderKnownUpdateState();
+            if (!isUpdateAvailable(res) && res?.status !== "blocked") {
               toast(res?.message || "当前已是最新版本", "info");
             }
           } catch (e) {
@@ -596,6 +626,7 @@ export function mount(root, ctx) {
   /* ---------------- 动态 kv 局部刷新（不触碰表单区） ---------------- */
 
   function refreshDynamic() {
+    renderKnownUpdateState();
     dataDirKv.value.textContent = store.select.dataDir() || "—";
 
     const dev = store.select.device();
