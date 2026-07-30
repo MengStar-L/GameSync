@@ -136,6 +136,8 @@ export function createMockBackend() {
       startupSyncMode: "smart",
       conflictPolicy: "manual",
       backgroundSyncIntervalSeconds: 60,
+      gameCardMode: "classic",
+      gameCardModeUpdatedAt: agoIso(60),
       defaultInstallDir: "",
       defaultSaveDir: "",
       defaultSteamInstallDir: "",
@@ -453,8 +455,11 @@ export function createMockBackend() {
       await delay(300);
       return "D:/Games/demo/start.exe";
     },
-    async PickFolder() {
+    async PickFolder(request) {
       await delay(300);
+      if (String(request?.title || "").includes("Steam 游戏路径")) return "D:/SteamLibrary/steamapps/common";
+      if (String(request?.title || "").includes("Steam 游戏存档")) return "C:/Users/player/SteamSaves";
+      if (String(request?.title || "").includes("第三方游戏路径")) return "D:/Games";
       return "C:/Users/player/Saves/demo";
     },
     async OpenPath() {},

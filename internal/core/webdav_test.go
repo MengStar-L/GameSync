@@ -310,6 +310,8 @@ func TestWebdavSaveRemoteCatalogRevisionAndConflictRetry(t *testing.T) {
 			ConflictPolicy:                "manual",
 			BackgroundSyncIntervalSeconds: 30,
 			SyncSettingsUpdatedAt:         time.Now(),
+			GameCardMode:                  GameCardModeOverlayHover,
+			GameCardModeUpdatedAt:         time.Now(),
 			RawgAPIKey:                    "rawg-preference-secret",
 			RawgAPIKeyUpdatedAt:           time.Now(),
 			SteamGridDBAPIKey:             "sgdb-preference-secret",
@@ -384,6 +386,7 @@ func TestWebdavSaveRemoteCatalogRevisionAndConflictRetry(t *testing.T) {
 		t.Fatalf("LoadRemoteCatalog = %+v, err = %v", loaded, err)
 	}
 	if loaded.Preferences == nil || loaded.Preferences.BackgroundSyncIntervalSeconds != 30 ||
+		loaded.Preferences.GameCardMode != GameCardModeOverlayHover ||
 		loaded.Preferences.RawgAPIKey != "rawg-preference-secret" || loaded.Preferences.SteamGridDBAPIKey != "sgdb-preference-secret" {
 		t.Fatalf("LoadRemoteCatalog preferences = %+v", loaded.Preferences)
 	}

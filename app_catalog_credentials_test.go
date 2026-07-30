@@ -33,11 +33,13 @@ func TestLocalCatalogAheadOfRemoteIncludesAllSynchronizedPreferenceGroups(t *tes
 	now := time.Now().UTC()
 	remote := core.RemoteCatalog{Preferences: &core.RemotePreferences{
 		SyncSettingsUpdatedAt:      now,
+		GameCardModeUpdatedAt:      now,
 		RawgAPIKeyUpdatedAt:        now,
 		SteamGridDBAPIKeyUpdatedAt: now,
 	}}
 	for _, update := range []func(*core.Preferences){
 		func(prefs *core.Preferences) { prefs.SyncSettingsUpdatedAt = now.Add(time.Second) },
+		func(prefs *core.Preferences) { prefs.GameCardModeUpdatedAt = now.Add(time.Second) },
 		func(prefs *core.Preferences) { prefs.RawgAPIKeyUpdatedAt = now.Add(time.Second) },
 		func(prefs *core.Preferences) { prefs.SteamGridDBAPIKeyUpdatedAt = now.Add(time.Second) },
 	} {

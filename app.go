@@ -128,8 +128,8 @@ const (
 	msgGameIDRequired                   = "游戏 ID 不能为空"
 	msgSyncPreparing                    = "正在准备同步存档，请稍候..."
 	msgWailsRuntimeNotReady             = "Wails 运行环境尚未就绪"
-	titlePickSaveFolder                 = "选择存档目录"
-	titlePickLaunchFile                 = "选择启动文件"
+	titlePickFile                       = "选择文件"
+	titlePickFolder                     = "选择文件夹"
 	msgTargetPathRequired               = "目标路径不能为空"
 	msgTargetPathNotFound               = "目标路径不存在: %w"
 	msgCoverSourceReadFailed            = "读取封面来源失败: %s"
@@ -2021,26 +2021,53 @@ func (a *App) PrepareGameLaunch(gameID string, conflictChoice string) (map[strin
 	}, nil
 }
 
-func (a *App) PickFolder(defaultDirectory string) (string, error) {
+func (a *App) PickFolder(request core.PathDialogRequest) (string, error) {
 	if a.ctx == nil {
 		return "", errors.New(msgWailsRuntimeNotReady)
 	}
 
 	return wailsruntime.OpenDirectoryDialog(a.ctx, wailsruntime.OpenDialogOptions{
-		Title:            titlePickSaveFolder,
-		DefaultDirectory: strings.TrimSpace(defaultDirectory),
+		Title:            dialogTitle(request.Title, titlePickFolder),
+		DefaultDirectory: dialogDefaultDirectory(request.DefaultDirectory),
 	})
 }
 
-func (a *App) PickFile(defaultDirectory string) (string, error) {
+func (a *App) PickFile(request core.PathDialogRequest) (string, error) {
 	if a.ctx == nil {
 		return "", errors.New(msgWailsRuntimeNotReady)
 	}
 
 	return wailsruntime.OpenFileDialog(a.ctx, wailsruntime.OpenDialogOptions{
-		Title:            titlePickLaunchFile,
-		DefaultDirectory: strings.TrimSpace(defaultDirectory),
+		Title:            dialogTitle(request.Title, titlePickFile),
+		DefaultDirectory: dialogDefaultDirectory(request.DefaultDirectory),
 	})
+}
+
+func dialogTitle(title string, fallback string) string {
+	if title = strings.TrimSpace(title); title != "" {
+		return title
+	}
+	return fallback
+}
+
+func dialogDefaultDirectory(candidate string) string {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return ""
+	}
+
+	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+		return candidate
+	}
+
+	parent := filepath.Dir(candidate)
+	if parent == "" || parent == "." || parent == candidate {
+		return ""
+	}
+	if info, err := os.Stat(parent); err == nil && info.IsDir() {
+		return parent
+	}
+	return ""
 }
 
 func (a *App) OpenPath(target string) error {
@@ -3170,6 +3197,8 @@ func (a *App) syncRemoteCatalog() error {
 				ConflictPolicy:                state.Preferences.ConflictPolicy,
 				BackgroundSyncIntervalSeconds: state.Preferences.BackgroundSyncIntervalSeconds,
 				SyncSettingsUpdatedAt:         state.Preferences.SyncSettingsUpdatedAt,
+				GameCardMode:                  state.Preferences.GameCardMode,
+				GameCardModeUpdatedAt:         state.Preferences.GameCardModeUpdatedAt,
 				RawgAPIKey:                    state.Preferences.RawgAPIKey,
 				SteamGridDBAPIKey:             state.Preferences.SteamGridDBAPIKey,
 				RawgAPIKeyUpdatedAt:           state.Preferences.RawgAPIKeyUpdatedAt,
@@ -3318,6 +3347,7 @@ func localCatalogAheadOfRemote(state core.AppState, catalog core.RemoteCatalog) 
 	}
 	prefs := state.Preferences
 	return prefs.SyncSettingsUpdatedAt.After(remotePrefs.SyncSettingsUpdatedAt) ||
+		prefs.GameCardModeUpdatedAt.After(remotePrefs.GameCardModeUpdatedAt) ||
 		prefs.RawgAPIKeyUpdatedAt.After(remotePrefs.RawgAPIKeyUpdatedAt) ||
 		prefs.SteamGridDBAPIKeyUpdatedAt.After(remotePrefs.SteamGridDBAPIKeyUpdatedAt) ||
 		prefs.FavoriteGamesUpdatedAt.After(remotePrefs.FavoriteGamesUpdatedAt) ||

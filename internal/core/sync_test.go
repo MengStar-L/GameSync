@@ -576,3 +576,36 @@ func TestMergeRemoteCatalogLegacyPreferencesDoNotEraseLocalValues(t *testing.T) 
 		t.Fatalf("legacy remote preferences erased local values: %+v", got)
 	}
 }
+
+func TestMergeRemoteCatalogGameCardModeUsesNewestTimestamp(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	localAt := time.Now().UTC()
+	remoteAt := localAt.Add(time.Minute)
+	store.state.Preferences.GameCardMode = GameCardModeClassic
+	store.state.Preferences.GameCardModeUpdatedAt = localAt
+
+	err = store.MergeRemoteCatalog(RemoteCatalog{Preferences: &RemotePreferences{
+		GameCardMode:          GameCardModeOverlayPersistent,
+		GameCardModeUpdatedAt: remoteAt,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Snapshot().Preferences.GameCardMode; got != GameCardModeOverlayPersistent {
+		t.Fatalf("newer remote mode not applied: %q", got)
+	}
+
+	err = store.MergeRemoteCatalog(RemoteCatalog{Preferences: &RemotePreferences{
+		GameCardMode:          GameCardModeOverlayHover,
+		GameCardModeUpdatedAt: localAt,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Snapshot().Preferences.GameCardMode; got != GameCardModeOverlayPersistent {
+		t.Fatalf("older remote mode overwrote local: %q", got)
+	}
+}

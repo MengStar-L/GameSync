@@ -1,4 +1,10 @@
 import { createSelectField } from "../settings-select.js";
+import {
+  GAME_CARD_MODE_CLASSIC,
+  GAME_CARD_MODE_OVERLAY_HOVER,
+  GAME_CARD_MODE_OVERLAY_PERSISTENT,
+  normalizeGameCardMode,
+} from "../game-card-mode.js";
 
 // ============================================================
 // views/settings.js —— 设置页（前缀 .set-）
@@ -27,6 +33,7 @@ export function mount(root, ctx) {
 
   let disposed = false;
   const errMsg = (e) => e?.message || String(e || "未知错误");
+  const prefsInit = store.select.preferences();
 
   /* 异步按钮防重复：busy 期间禁点，结束后恢复 */
   async function withBusy(btn, fn) {
@@ -77,11 +84,94 @@ export function mount(root, ctx) {
     "打开数据目录",
   );
 
+  function localPathField(label, value, dialogTitle) {
+    const input = h("input", {
+      class: "input",
+      value: value || "",
+      placeholder: "未设置",
+      autocomplete: "off",
+      spellcheck: "false",
+    });
+    const browseBtn = h(
+      "button",
+      {
+        class: "btn",
+        type: "button",
+        onClick: () =>
+          withBusy(browseBtn, async () => {
+            try {
+              const path = await api.PickFolder({ title: dialogTitle, defaultDirectory: input.value.trim() });
+              if (path) input.value = path;
+            } catch (e) {
+              toast(`选择路径失败：${errMsg(e)}`, "err");
+            }
+          }),
+      },
+      iconEl("folderOpen"),
+      "浏览",
+    );
+    return {
+      field: h(
+        "div",
+        { class: "field" },
+        h("span", { class: "field-label" }, label),
+        h("div", { class: "input-row" }, input, browseBtn),
+      ),
+      input,
+    };
+  }
+
+  const steamInstallPath = localPathField(
+    "Steam 游戏路径",
+    prefsInit.defaultSteamInstallDir,
+    "选择 Steam 游戏路径",
+  );
+  const steamSavePath = localPathField(
+    "Steam 游戏存档路径",
+    prefsInit.defaultSteamSaveDir,
+    "选择 Steam 游戏存档路径",
+  );
+  const thirdInstallPath = localPathField(
+    "第三方游戏路径",
+    prefsInit.defaultThirdInstallDir,
+    "选择第三方游戏路径",
+  );
+
+  const savePathsBtn = h(
+    "button",
+    {
+      class: "btn btn-primary",
+      onClick: () =>
+        withBusy(savePathsBtn, async () => {
+          try {
+            await store.actions.savePreferences({
+              defaultSteamInstallDir: steamInstallPath.input.value.trim(),
+              defaultSteamSaveDir: steamSavePath.input.value.trim(),
+              defaultThirdInstallDir: thirdInstallPath.input.value.trim(),
+            });
+            toast("本地路径已保存", "ok");
+          } catch (e) {
+            toast(`保存失败：${errMsg(e)}`, "err");
+          }
+        }),
+    },
+    iconEl("check"),
+    "保存路径",
+  );
+
   const secPaths = section(
     "paths",
     "本地路径",
     h("div", { class: "set-kvs" }, dataDirKv.row),
     h("div", { class: "set-actions" }, openDirBtn),
+    h(
+      "div",
+      { class: "set-local-path-list" },
+      steamInstallPath.field,
+      steamSavePath.field,
+      thirdInstallPath.field,
+    ),
+    h("div", { class: "set-actions" }, savePathsBtn),
   );
 
   /* ---------------- 2. 设备信息 ---------------- */
@@ -205,9 +295,63 @@ export function mount(root, ctx) {
 
   /* ---------------- 4. 同步偏好（只建一次，防焦点丢失） ---------------- */
 
-  const prefsInit = store.select.preferences();
-
   const autoSyncChk = h("input", { type: "checkbox", checked: Boolean(prefsInit.autoSyncOnLaunch) });
+
+  function createCardModeControl(initialValue) {
+    let value = normalizeGameCardMode(initialValue);
+    const options = [
+      [GAME_CARD_MODE_CLASSIC, "经典卡片"],
+      [GAME_CARD_MODE_OVERLAY_HOVER, "悬停显示"],
+      [GAME_CARD_MODE_OVERLAY_PERSISTENT, "标题常显"],
+    ];
+    const buttons = new Map();
+
+    const group = h("div", {
+      class: "set-card-mode-options",
+      role: "radiogroup",
+      "aria-label": "游戏卡片样式",
+    });
+
+    function select(nextValue) {
+      value = normalizeGameCardMode(nextValue);
+      for (const [mode, button] of buttons) {
+        const active = mode === value;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-checked", String(active));
+      }
+    }
+
+    for (const [mode, label] of options) {
+      const button = h(
+        "button",
+        {
+          class: "set-card-mode-option",
+          type: "button",
+          role: "radio",
+          "aria-checked": "false",
+          onClick: () => select(mode),
+        },
+        label,
+      );
+      buttons.set(mode, button);
+      group.append(button);
+    }
+    select(value);
+
+    return {
+      field: h(
+        "div",
+        { class: "field set-card-mode-field" },
+        h("span", { class: "field-label" }, "游戏卡片样式"),
+        group,
+      ),
+      get value() {
+        return value;
+      },
+    };
+  }
+
+  const cardModeControl = createCardModeControl(prefsInit.gameCardMode);
 
   function secretField(label, value, help) {
     const input = h("input", {
@@ -291,6 +435,7 @@ export function mount(root, ctx) {
               startupSyncMode: modeSelect.value,
               conflictPolicy: policySelect.value,
               backgroundSyncIntervalSeconds: Number(backgroundSyncSelect.value),
+              gameCardMode: cardModeControl.value,
               rawgApiKey: rawgField.input.value.trim(),
               steamGridDbApiKey: sgdbField.input.value.trim(),
             });
@@ -313,6 +458,7 @@ export function mount(root, ctx) {
       autoSyncChk,
       h("span", {}, "启动游戏前自动同步存档"),
     ),
+    cardModeControl.field,
     h("div", { class: "set-form-grid" }, modeSelect.field, policySelect.field, backgroundSyncSelect.field),
     rawgField.field,
     sgdbField.field,

@@ -3,7 +3,14 @@ package core
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"time"
+)
+
+const (
+	GameCardModeClassic           = "classic"
+	GameCardModeOverlayHover      = "overlay-hover"
+	GameCardModeOverlayPersistent = "overlay-persistent"
 )
 
 type AppState struct {
@@ -38,6 +45,7 @@ type Preferences struct {
 	StartupSyncMode               string    `json:"startupSyncMode"`
 	ConflictPolicy                string    `json:"conflictPolicy"`
 	BackgroundSyncIntervalSeconds int       `json:"backgroundSyncIntervalSeconds"`
+	GameCardMode                  string    `json:"gameCardMode"`
 	DefaultInstallDir             string    `json:"defaultInstallDir"`
 	DefaultSaveDir                string    `json:"defaultSaveDir"`
 	DefaultSteamInstallDir        string    `json:"defaultSteamInstallDir"`
@@ -58,6 +66,7 @@ type Preferences struct {
 	PinnedTagsUpdatedAt           time.Time `json:"pinnedTagsUpdatedAt,omitempty" ts_type:"string"`
 	SidebarNavOrderUpdatedAt      time.Time `json:"sidebarNavOrderUpdatedAt,omitempty" ts_type:"string"`
 	GameOrderUpdatedAt            time.Time `json:"gameOrderUpdatedAt,omitempty" ts_type:"string"`
+	GameCardModeUpdatedAt         time.Time `json:"gameCardModeUpdatedAt,omitempty" ts_type:"string"`
 }
 
 type CloudflareAccount struct {
@@ -174,6 +183,8 @@ type RemotePreferences struct {
 	ConflictPolicy                string    `json:"conflictPolicy"`
 	BackgroundSyncIntervalSeconds int       `json:"backgroundSyncIntervalSeconds"`
 	SyncSettingsUpdatedAt         time.Time `json:"syncSettingsUpdatedAt,omitempty" ts_type:"string"`
+	GameCardMode                  string    `json:"gameCardMode"`
+	GameCardModeUpdatedAt         time.Time `json:"gameCardModeUpdatedAt,omitempty" ts_type:"string"`
 	RawgAPIKey                    string    `json:"rawgApiKey"`
 	SteamGridDBAPIKey             string    `json:"steamGridDbApiKey"`
 	RawgAPIKeyUpdatedAt           time.Time `json:"rawgApiKeyUpdatedAt,omitempty" ts_type:"string"`
@@ -378,6 +389,11 @@ type SyncRunRequest struct {
 	ConflictChoice string `json:"conflictChoice"`
 }
 
+type PathDialogRequest struct {
+	Title            string `json:"title"`
+	DefaultDirectory string `json:"defaultDirectory"`
+}
+
 type SyncResourceStats struct {
 	EnumeratedGames   int `json:"enumeratedGames"`
 	StattedFiles      int `json:"stattedFiles"`
@@ -470,6 +486,7 @@ func DefaultPreferences() Preferences {
 		StartupSyncMode:               "smart",
 		ConflictPolicy:                "manual",
 		BackgroundSyncIntervalSeconds: DefaultBackgroundSyncIntervalSeconds,
+		GameCardMode:                  GameCardModeClassic,
 		DefaultInstallDir:             "",
 		DefaultSaveDir:                "",
 		DefaultSteamInstallDir:        "",
@@ -478,6 +495,17 @@ func DefaultPreferences() Preferences {
 		DefaultThirdSaveDir:           "",
 		RawgAPIKey:                    "",
 		SteamGridDBAPIKey:             "",
+	}
+}
+
+func NormalizeGameCardMode(value string) string {
+	switch strings.TrimSpace(value) {
+	case GameCardModeOverlayHover:
+		return GameCardModeOverlayHover
+	case GameCardModeOverlayPersistent:
+		return GameCardModeOverlayPersistent
+	default:
+		return GameCardModeClassic
 	}
 }
 

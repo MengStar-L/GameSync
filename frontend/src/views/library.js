@@ -1,3 +1,10 @@
+import {
+  GAME_CARD_MODE_CLASSIC,
+  gameCardPrimaryAction,
+  isCardClickSuppressed,
+  normalizeGameCardMode,
+} from "../game-card-mode.js";
+
 // ============================================================
 // views/library.js —— 游戏库主页：筛选纸签行 + 封面墙
 // 增量渲染：页面骨架只建一次；卡片按 game.id 复用 DOM 节点，
@@ -14,6 +21,7 @@ export function mount(root, ctx) {
   let dragId = null; // 拖拽中的游戏 id（期间暂停重渲染，避免 DOM 被重建）
   let dragEl = null; // 拖拽中的卡片元素
   let dragDirty = false; // 拖拽期间被合并掉的渲染请求
+  let suppressCardClickUntil = 0; // 防止拖拽结束时的合成 click 误触发主动作
   let alive = true; // 卸载后拦截迟到的异步回调
 
   /* ---------------- 页面骨架（只建一次） ---------------- */
@@ -33,6 +41,7 @@ export function mount(root, ctx) {
   /* ---------------- 工具 ---------------- */
 
   const coverRef = (g) => (/^data:/i.test(g.coverPath || "") ? g.coverPath : g.id);
+  const currentCardMode = () => normalizeGameCardMode(store.select.preferences().gameCardMode);
 
   function scheduleRender() {
     if (!alive) return;
@@ -53,6 +62,14 @@ export function mount(root, ctx) {
       busy.delete(key);
       scheduleRender();
     }
+  }
+
+  function activateCard(g) {
+    const action = gameCardPrimaryAction(currentCardMode(), Boolean(g.installPath));
+    if (action === "launch") {
+      return runBusy(`launch:${g.id}`, () => store.actions.launchGame(g.id));
+    }
+    router.navigate("game", { id: g.id });
   }
 
   function gameMenu(e, g) {
@@ -227,6 +244,37 @@ export function mount(root, ctx) {
     }
   }
 
+  function quickLaunchButton(g) {
+    return h("button", {
+      class: "lib-quick",
+      title: "快速启动",
+      "aria-label": `启动 ${g.name}`,
+      html: icon("play"),
+      onClick: (e) => {
+        e.stopPropagation();
+        runBusy(`launch:${g.id}`, () => store.actions.launchGame(g.id));
+      },
+    });
+  }
+
+  function updateCardMode(card, g, mode) {
+    const quick = card.querySelector(".lib-quick");
+    if (mode === GAME_CARD_MODE_CLASSIC && g.installPath) {
+      if (!quick) {
+        card.querySelector(".lib-card-cover")?.append(quickLaunchButton(g));
+        card.__ssig = "";
+      }
+    } else {
+      if (quick) {
+        quick.remove();
+        card.__ssig = "";
+      }
+    }
+
+    const opensDetails = gameCardPrimaryAction(mode, Boolean(g.installPath)) === "details";
+    card.setAttribute("aria-label", opensDetails ? `查看 ${g.name} 详情` : `启动 ${g.name}`);
+  }
+
   function buildCard(g, fav, sortable) {
     const noInstallPath = !g.installPath;
     const pathsUnset = noInstallPath || !g.savePath;
@@ -243,28 +291,26 @@ export function mount(root, ctx) {
       }),
     );
     if (configLabel) coverBox.append(h("span", { class: "badge mute lib-card-nopath" }, configLabel));
-    if (!noInstallPath) {
-      coverBox.append(
-        h("button", {
-          class: "lib-quick",
-          title: "快速启动",
-          "aria-label": `启动 ${g.name}`,
-          html: icon("play"),
-          onClick: (e) => {
-            e.stopPropagation();
-            runBusy(`launch:${g.id}`, () => store.actions.launchGame(g.id));
-          },
-        }),
-      );
-    }
-
     const card = h(
       "article",
       {
         class: `card card-hover lib-card${pathsUnset ? " lib-unset" : ""}`,
         dataset: { id: g.id },
         draggable: sortable ? "true" : null,
-        onClick: () => router.navigate("game", { id: g.id }),
+        role: "button",
+        tabindex: "0",
+        onClick: () => {
+          if (isCardClickSuppressed(Date.now(), suppressCardClickUntil)) {
+            suppressCardClickUntil = 0;
+            return;
+          }
+          activateCard(g);
+        },
+        onKeydown: (e) => {
+          if (e.target !== e.currentTarget || e.key !== "Enter") return;
+          e.preventDefault();
+          activateCard(g);
+        },
         onContextmenu: (e) => gameMenu(e, g),
       },
       coverBox,
@@ -297,7 +343,10 @@ export function mount(root, ctx) {
         // 延迟加类，保证拖拽快照仍是原样卡片
         window.setTimeout(() => card.classList.add("lib-dragging"), 0);
       });
-      card.addEventListener("dragend", () => finishDrag(card.parentElement));
+      card.addEventListener("dragend", () => {
+        suppressCardClickUntil = Date.now() + 250;
+        finishDrag(card.parentElement);
+      });
     }
     return card;
   }
@@ -305,6 +354,7 @@ export function mount(root, ctx) {
   /* ---------------- 网格增量同步 ---------------- */
 
   function syncGrid(list, sortable) {
+    const mode = currentCardMode();
     if (!gridEl) {
       gridEl = h("div", { class: `lib-grid${firstFill ? " stagger" : ""}` });
       bindGridDrag(gridEl);
@@ -313,6 +363,8 @@ export function mount(root, ctx) {
         window.setTimeout(() => gridEl?.classList.remove("stagger"), 800);
       }
     }
+    gridEl.classList.remove("lib-mode-classic", "lib-mode-overlay-hover", "lib-mode-overlay-persistent");
+    gridEl.classList.add(`lib-mode-${mode}`);
     if (gridEl.parentElement !== contentBox) {
       contentBox.innerHTML = "";
       contentBox.append(gridEl);
@@ -336,6 +388,7 @@ export function mount(root, ctx) {
         el = buildCard(g, fav, sortable);
         if (!firstFill) el.classList.add("lib-card-enter");
       }
+      updateCardMode(el, g, mode);
       updateCardStatus(el, g);
       desired.push(el);
     }

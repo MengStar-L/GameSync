@@ -215,10 +215,75 @@
   padding: 2px 0 16px;
 }
 
+.set-card-mode-field {
+  margin-bottom: 16px;
+}
+
+.set-card-mode-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+}
+
+.set-card-mode-option {
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease);
+}
+
+.set-card-mode-option:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--card) 58%, transparent);
+}
+
+.set-card-mode-option.active {
+  color: var(--ink);
+  background: var(--card);
+  box-shadow: var(--shadow-press-active);
+}
+
+.set-card-mode-option:focus-visible {
+  outline: 2px solid var(--vermilion);
+  outline-offset: 1px;
+}
+
 .set-form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0 16px;
+}
+
+.set-local-path-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--line);
+}
+
+.set-local-path-list .field {
+  margin: 0;
+}
+
+.set-local-path-list .input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
 }
 
 .set-select {

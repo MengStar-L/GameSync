@@ -1,3 +1,5 @@
+import { gamePathDialogDefault } from "../game-path-defaults.js";
+
 // ============================================================
 // views/game.js —— 游戏详情 / 编辑页（整页路由，前缀 .gd-）
 // 模式：params.id 有值 = 编辑既有游戏；无值 = 新建（添加游戏）。
@@ -180,7 +182,7 @@ export function mount(root, ctx) {
 
   async function pickLocalCover() {
     try {
-      const path = await api.PickFile("选择封面图片");
+      const path = await api.PickFile({ title: "选择封面图片", defaultDirectory: form.coverPath });
       if (!path) return;
       form.coverPath = path;
       dirty.add("coverPath");
@@ -462,6 +464,14 @@ export function mount(root, ctx) {
     return h("div", { class: "field" }, fieldLabel(label, required), h("div", { class: "input-row" }, input, browseBtn));
   }
 
+  function pickGamePath(kind) {
+    const defaultDirectory = gamePathDialogDefault(kind, form, store.select.preferences());
+    if (kind === "install") {
+      return api.PickFile({ title: "选择启动文件", defaultDirectory });
+    }
+    return api.PickFolder({ title: "选择存档目录", defaultDirectory });
+  }
+
   function buildAccountSelect() {
     const sel = h("select", {
       class: "input",
@@ -644,8 +654,8 @@ export function mount(root, ctx) {
       h(
         "div",
         { class: "gd-grid-2" },
-        pathField("启动文件", false, installInput, () => api.PickFile("选择启动文件")),
-        pathField("存档目录", false, saveInput, () => api.PickFolder("选择存档目录")),
+        pathField("启动文件", false, installInput, () => pickGamePath("install")),
+        pathField("存档目录", false, saveInput, () => pickGamePath("save")),
       ),
       h(
         "div",

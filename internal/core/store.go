@@ -667,6 +667,12 @@ func (s *Store) MergeRemoteCatalog(catalog RemoteCatalog) error {
 		s.state.Preferences.FavoriteGamesUpdatedAt = catalog.Preferences.FavoriteGamesUpdatedAt
 	}
 	if catalog.Preferences != nil &&
+		!catalog.Preferences.GameCardModeUpdatedAt.IsZero() &&
+		!s.state.Preferences.GameCardModeUpdatedAt.After(catalog.Preferences.GameCardModeUpdatedAt) {
+		s.state.Preferences.GameCardMode = NormalizeGameCardMode(catalog.Preferences.GameCardMode)
+		s.state.Preferences.GameCardModeUpdatedAt = catalog.Preferences.GameCardModeUpdatedAt
+	}
+	if catalog.Preferences != nil &&
 		!catalog.Preferences.SyncSettingsUpdatedAt.IsZero() &&
 		!s.state.Preferences.SyncSettingsUpdatedAt.After(catalog.Preferences.SyncSettingsUpdatedAt) &&
 		IsValidBackgroundSyncInterval(catalog.Preferences.BackgroundSyncIntervalSeconds) {
@@ -895,6 +901,7 @@ func (s *Store) SavePreferences(preferences Preferences) error {
 	preferences.DefaultSteamSaveDir = strings.TrimSpace(preferences.DefaultSteamSaveDir)
 	preferences.DefaultThirdInstallDir = strings.TrimSpace(preferences.DefaultThirdInstallDir)
 	preferences.DefaultThirdSaveDir = strings.TrimSpace(preferences.DefaultThirdSaveDir)
+	preferences.GameCardMode = NormalizeGameCardMode(preferences.GameCardMode)
 	preferences.RawgAPIKey = strings.TrimSpace(preferences.RawgAPIKey)
 	preferences.SteamGridDBAPIKey = strings.TrimSpace(preferences.SteamGridDBAPIKey)
 	preferences.FavoriteGames = normalizeStringList(preferences.FavoriteGames)
@@ -910,6 +917,9 @@ func (s *Store) SavePreferences(preferences Preferences) error {
 	}
 	now := time.Now()
 	preferences = resolvePreferenceSyncSettings(s.state.Preferences, preferences, now)
+	preferences.GameCardMode, preferences.GameCardModeUpdatedAt = resolvePreferenceStringField(
+		s.state.Preferences.GameCardMode, s.state.Preferences.GameCardModeUpdatedAt,
+		preferences.GameCardMode, preferences.GameCardModeUpdatedAt, now)
 	preferences.FavoriteGames, preferences.FavoriteGamesUpdatedAt = resolvePreferenceListField(
 		s.state.Preferences.FavoriteGames, s.state.Preferences.FavoriteGamesUpdatedAt,
 		preferences.FavoriteGames, preferences.FavoriteGamesUpdatedAt, now)
@@ -980,6 +990,10 @@ func syncSettingsEqual(left Preferences, right Preferences) bool {
 func migrateLocalPreferenceTimestamps(preferences *Preferences, now time.Time) {
 	if preferences == nil {
 		return
+	}
+	preferences.GameCardMode = NormalizeGameCardMode(preferences.GameCardMode)
+	if preferences.GameCardModeUpdatedAt.IsZero() && preferences.GameCardMode != GameCardModeClassic {
+		preferences.GameCardModeUpdatedAt = now
 	}
 	if preferences.SyncSettingsUpdatedAt.IsZero() && !syncSettingsEqual(*preferences, DefaultPreferences()) {
 		preferences.SyncSettingsUpdatedAt = now
@@ -1112,6 +1126,7 @@ func (s *Store) load() error {
 	if !backgroundSyncIntervalPresent || !IsValidBackgroundSyncInterval(s.state.Preferences.BackgroundSyncIntervalSeconds) {
 		s.state.Preferences.BackgroundSyncIntervalSeconds = DefaultBackgroundSyncIntervalSeconds
 	}
+	s.state.Preferences.GameCardMode = NormalizeGameCardMode(s.state.Preferences.GameCardMode)
 	migrateLocalPreferenceTimestamps(&s.state.Preferences, time.Now())
 	if s.state.Games == nil {
 		s.state.Games = []Game{}

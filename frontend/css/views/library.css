@@ -144,8 +144,14 @@
 }
 
 .lib-card {
+  position: relative;
   overflow: hidden;
   cursor: pointer;
+}
+
+.lib-card:focus-visible {
+  outline: 2px solid var(--vermilion);
+  outline-offset: 2px;
 }
 
 /* 无路径游戏：半透明 */
@@ -323,6 +329,114 @@
   font-size: 11.5px;
   color: var(--ink-3);
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 封面悬浮卡片 ---------- */
+
+.lib-mode-overlay-hover .lib-card-body,
+.lib-mode-overlay-persistent .lib-card-body {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 3;
+  border-top: 1px solid color-mix(in srgb, white 18%, transparent);
+  background: color-mix(in srgb, #171512 72%, transparent);
+  color: white;
+  backdrop-filter: blur(10px) saturate(0.9);
+  transition:
+    opacity var(--t-med) var(--ease),
+    transform var(--t-med) var(--ease);
+}
+
+.lib-mode-overlay-hover .lib-card-body::before,
+.lib-mode-overlay-persistent .lib-card-body::before {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  height: 44px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, color-mix(in srgb, #171512 68%, transparent));
+}
+
+.lib-mode-overlay-hover .lib-card-name,
+.lib-mode-overlay-hover .lib-card-sub,
+.lib-mode-overlay-persistent .lib-card-name,
+.lib-mode-overlay-persistent .lib-card-sub {
+  position: relative;
+  z-index: 1;
+}
+
+.lib-mode-overlay-hover .lib-card-name-text,
+.lib-mode-overlay-persistent .lib-card-name-text {
+  color: white;
+  text-shadow: 0 1px 2px color-mix(in srgb, black 55%, transparent);
+}
+
+.lib-mode-overlay-hover .lib-card-sub,
+.lib-mode-overlay-persistent .lib-card-sub {
+  color: color-mix(in srgb, white 72%, transparent);
+}
+
+.lib-mode-overlay-hover .lib-quick,
+.lib-mode-overlay-persistent .lib-quick {
+  display: none;
+}
+
+.lib-mode-overlay-hover .lib-card-body,
+.lib-mode-overlay-hover .lib-card-platform,
+.lib-mode-overlay-hover .lib-card-status,
+.lib-mode-overlay-hover .lib-card-nopath,
+.lib-mode-overlay-persistent .lib-card-platform,
+.lib-mode-overlay-persistent .lib-card-status,
+.lib-mode-overlay-persistent .lib-card-nopath {
+  visibility: hidden;
+  opacity: 0;
+  transform: translateY(6px);
+  transition:
+    visibility 0s linear var(--t-med),
+    opacity var(--t-med) var(--ease),
+    transform var(--t-med) var(--ease);
+}
+
+.lib-mode-overlay-hover .lib-card:hover .lib-card-body,
+.lib-mode-overlay-hover .lib-card:hover .lib-card-platform,
+.lib-mode-overlay-hover .lib-card:hover .lib-card-status,
+.lib-mode-overlay-hover .lib-card:hover .lib-card-nopath,
+.lib-mode-overlay-hover .lib-card.menu-pin .lib-card-body,
+.lib-mode-overlay-hover .lib-card.menu-pin .lib-card-platform,
+.lib-mode-overlay-hover .lib-card.menu-pin .lib-card-status,
+.lib-mode-overlay-hover .lib-card.menu-pin .lib-card-nopath,
+.lib-mode-overlay-hover .lib-card:focus-visible .lib-card-body,
+.lib-mode-overlay-hover .lib-card:focus-visible .lib-card-platform,
+.lib-mode-overlay-hover .lib-card:focus-visible .lib-card-status,
+.lib-mode-overlay-hover .lib-card:focus-visible .lib-card-nopath,
+.lib-mode-overlay-persistent .lib-card:hover .lib-card-platform,
+.lib-mode-overlay-persistent .lib-card:hover .lib-card-status,
+.lib-mode-overlay-persistent .lib-card:hover .lib-card-nopath,
+.lib-mode-overlay-persistent .lib-card.menu-pin .lib-card-platform,
+.lib-mode-overlay-persistent .lib-card.menu-pin .lib-card-status,
+.lib-mode-overlay-persistent .lib-card.menu-pin .lib-card-nopath,
+.lib-mode-overlay-persistent .lib-card:focus-visible .lib-card-platform,
+.lib-mode-overlay-persistent .lib-card:focus-visible .lib-card-status,
+.lib-mode-overlay-persistent .lib-card:focus-visible .lib-card-nopath {
+  visibility: visible;
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: 0s;
+}
+
+.lib-mode-overlay-persistent .lib-card-body {
+  visibility: visible;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.lib-mode-overlay-hover .lib-card-status,
+.lib-mode-overlay-persistent .lib-card-status {
+  bottom: 68px;
 }
 
 /* 收藏小红心（hero 标题与卡片标题共用） */

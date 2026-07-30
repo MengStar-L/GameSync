@@ -36,6 +36,8 @@ func portableBackupFixture(t *testing.T) AppState {
 		}},
 		Preferences: Preferences{
 			BackgroundSyncIntervalSeconds: 30,
+			GameCardMode:                  GameCardModeOverlayPersistent,
+			GameCardModeUpdatedAt:         time.Now().UTC(),
 			DefaultInstallDir:             `C:\Games`,
 			DefaultSaveDir:                `C:\Saves`,
 			DefaultSteamInstallDir:        `D:\Steam`,
@@ -88,6 +90,9 @@ func TestPortableBackupIncludesSecretsAndExcludesMachinePaths(t *testing.T) {
 	}
 	if decoded.Games[0].BackupLocations["save.zip"] == "" || len(decoded.Activities) != 1 || len(decoded.Tombstones.Games) != 1 {
 		t.Fatalf("decoded backup lost non-path state: %+v", decoded)
+	}
+	if decoded.Preferences.GameCardMode != GameCardModeOverlayPersistent || decoded.Preferences.GameCardModeUpdatedAt.IsZero() {
+		t.Fatalf("decoded backup lost game card mode: %+v", decoded.Preferences)
 	}
 }
 
