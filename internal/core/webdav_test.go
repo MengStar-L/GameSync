@@ -304,6 +304,17 @@ func TestWebdavSaveRemoteCatalogRevisionAndConflictRetry(t *testing.T) {
 			ID: "acc1", Name: "主账号", IsPrimary: true,
 			APIToken: "plain-secret-token", CatalogUpdatedAt: time.Now(),
 		}},
+		Preferences: &RemotePreferences{
+			AutoSyncOnLaunch:              true,
+			StartupSyncMode:               "cloud-first",
+			ConflictPolicy:                "manual",
+			BackgroundSyncIntervalSeconds: 30,
+			SyncSettingsUpdatedAt:         time.Now(),
+			RawgAPIKey:                    "rawg-preference-secret",
+			RawgAPIKeyUpdatedAt:           time.Now(),
+			SteamGridDBAPIKey:             "sgdb-preference-secret",
+			SteamGridDBAPIKeyUpdatedAt:    time.Now(),
+		},
 	}
 	credentials := map[string]EncryptedCredentialBlob{
 		"acc1":           {Version: 1, KDF: "argon2id", Ciphertext: "cipher-a"},
@@ -324,6 +335,9 @@ func TestWebdavSaveRemoteCatalogRevisionAndConflictRetry(t *testing.T) {
 	stored := string(fake.files[fakeCatalogPath].data)
 	if strings.Contains(stored, "plain-secret-token") {
 		t.Fatalf("stored catalog leaks plaintext api token: %s", stored)
+	}
+	if !strings.Contains(stored, "rawg-preference-secret") || !strings.Contains(stored, "sgdb-preference-secret") {
+		t.Fatalf("stored catalog omitted synchronized preference keys: %s", stored)
 	}
 	if !strings.Contains(stored, "cipher-a") {
 		t.Fatalf("stored catalog missing encrypted credentials: %s", stored)
@@ -368,6 +382,10 @@ func TestWebdavSaveRemoteCatalogRevisionAndConflictRetry(t *testing.T) {
 	loaded, _, err := client.LoadRemoteCatalog(ctx)
 	if err != nil || len(loaded.Games) != 1 || loaded.Games[0].ID != "g1" || loaded.Revision != 11 {
 		t.Fatalf("LoadRemoteCatalog = %+v, err = %v", loaded, err)
+	}
+	if loaded.Preferences == nil || loaded.Preferences.BackgroundSyncIntervalSeconds != 30 ||
+		loaded.Preferences.RawgAPIKey != "rawg-preference-secret" || loaded.Preferences.SteamGridDBAPIKey != "sgdb-preference-secret" {
+		t.Fatalf("LoadRemoteCatalog preferences = %+v", loaded.Preferences)
 	}
 }
 

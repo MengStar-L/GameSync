@@ -430,6 +430,32 @@ func TestBackgroundSyncDisabledRejectsStaleRequests(t *testing.T) {
 	}
 }
 
+func TestRemotePreferenceMergeResetsBackgroundScheduler(t *testing.T) {
+	store, err := core.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	app.store = store
+	app.backgroundSyncStarted = true
+	oldTimer := &fakeBackgroundTimer{}
+	app.backgroundSyncTimer = oldTimer
+
+	err = app.mergeRemoteCatalog(core.RemoteCatalog{Preferences: &core.RemotePreferences{
+		AutoSyncOnLaunch:              true,
+		StartupSyncMode:               "smart",
+		ConflictPolicy:                "manual",
+		BackgroundSyncIntervalSeconds: 0,
+		SyncSettingsUpdatedAt:         time.Now().Add(time.Minute),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !oldTimer.isStopped() || store.Snapshot().Preferences.BackgroundSyncIntervalSeconds != 0 {
+		t.Fatal("remote interval did not stop the scheduler")
+	}
+}
+
 func TestBackgroundSyncSkipsRunningGame(t *testing.T) {
 	app, store, catalog, _ := newSyncCoordinatorFixture(t)
 	game := addSyncCoordinatorGame(t, store, "background-running", "baseline")

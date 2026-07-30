@@ -218,7 +218,7 @@ func TestMergeRemoteCatalogStripsIncomingLocalCoverPath(t *testing.T) {
 	}
 }
 
-func TestMergeRemoteCatalogKeepsLocalAPIKeys(t *testing.T) {
+func TestMergeRemoteCatalogAppliesNewerAPIKeyDeletion(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewStore(dir)
 	if err != nil {
@@ -244,13 +244,13 @@ func TestMergeRemoteCatalogKeepsLocalAPIKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if store.state.Preferences.RawgAPIKey != "local-rawg" ||
-		store.state.Preferences.SteamGridDBAPIKey != "local-sgdb" {
-		t.Fatalf("remote preferences overwrote local api keys: %+v", store.state.Preferences)
+	if store.state.Preferences.RawgAPIKey != "" ||
+		store.state.Preferences.SteamGridDBAPIKey != "" {
+		t.Fatalf("newer remote API key deletion was ignored: %+v", store.state.Preferences)
 	}
-	if !store.state.Preferences.RawgAPIKeyUpdatedAt.Equal(localTime) ||
-		!store.state.Preferences.SteamGridDBAPIKeyUpdatedAt.Equal(localTime) {
-		t.Fatalf("remote preferences overwrote local api key timestamps: %+v", store.state.Preferences)
+	if !store.state.Preferences.RawgAPIKeyUpdatedAt.Equal(remoteTime) ||
+		!store.state.Preferences.SteamGridDBAPIKeyUpdatedAt.Equal(remoteTime) {
+		t.Fatalf("newer remote API key timestamps were ignored: %+v", store.state.Preferences)
 	}
 }
 
@@ -509,5 +509,70 @@ func TestForceUploadManifestFilesAddsMissingUploads(t *testing.T) {
 	}
 	if uploads[1].Path != "b.dat" || uploads[1].Action != "upload" || uploads[1].Local.SHA256 != "b" {
 		t.Fatalf("missing forced upload for b.dat: %+v", uploads)
+	}
+}
+
+func TestMergeRemoteCatalogMergesCompletePreferencesByGroup(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := store.Snapshot().Preferences
+	local.BackgroundSyncIntervalSeconds = 300
+	local.RawgAPIKey = "local-newer"
+	if err := store.SavePreferences(local); err != nil {
+		t.Fatal(err)
+	}
+	local = store.Snapshot().Preferences
+
+	remoteAt := local.SyncSettingsUpdatedAt.Add(time.Minute)
+	if err := store.MergeRemoteCatalog(RemoteCatalog{Preferences: &RemotePreferences{
+		AutoSyncOnLaunch:              false,
+		StartupSyncMode:               "cloud-first",
+		ConflictPolicy:                "remote",
+		BackgroundSyncIntervalSeconds: 30,
+		SyncSettingsUpdatedAt:         remoteAt,
+		RawgAPIKey:                    "remote-older",
+		RawgAPIKeyUpdatedAt:           local.RawgAPIKeyUpdatedAt.Add(-time.Minute),
+		SteamGridDBAPIKey:             "remote-sgdb",
+		SteamGridDBAPIKeyUpdatedAt:    remoteAt,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := store.Snapshot().Preferences
+	if got.BackgroundSyncIntervalSeconds != 30 || got.StartupSyncMode != "cloud-first" || got.ConflictPolicy != "remote" {
+		t.Fatalf("remote settings group not merged: %+v", got)
+	}
+	if got.RawgAPIKey != "local-newer" || got.SteamGridDBAPIKey != "remote-sgdb" {
+		t.Fatalf("API key groups merged incorrectly: %+v", got)
+	}
+}
+
+func TestMergeRemoteCatalogLegacyPreferencesDoNotEraseLocalValues(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := store.Snapshot().Preferences
+	local.AutoSyncOnLaunch = true
+	local.BackgroundSyncIntervalSeconds = 30
+	local.RawgAPIKey = "local-rawg"
+	local.SteamGridDBAPIKey = "local-sgdb"
+	if err := store.SavePreferences(local); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.MergeRemoteCatalog(RemoteCatalog{Preferences: &RemotePreferences{
+		StartupSyncMode: "smart",
+		ConflictPolicy:  "manual",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := store.Snapshot().Preferences
+	if !got.AutoSyncOnLaunch || got.BackgroundSyncIntervalSeconds != 30 ||
+		got.RawgAPIKey != "local-rawg" || got.SteamGridDBAPIKey != "local-sgdb" {
+		t.Fatalf("legacy remote preferences erased local values: %+v", got)
 	}
 }

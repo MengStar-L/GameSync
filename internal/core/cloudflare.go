@@ -326,6 +326,9 @@ func (c *D1Client) SaveRemoteCatalog(ctx context.Context, catalog RemoteCatalog,
 		return 0, fmt.Errorf("encode shared preferences: %w", err)
 	}
 	preferencesUpdatedAt := maxTime(
+		sharedPreferences.SyncSettingsUpdatedAt,
+		sharedPreferences.RawgAPIKeyUpdatedAt,
+		sharedPreferences.SteamGridDBAPIKeyUpdatedAt,
 		sharedPreferences.FavoriteGamesUpdatedAt,
 		sharedPreferences.TagOrderUpdatedAt,
 		sharedPreferences.PinnedTagsUpdatedAt,
@@ -399,10 +402,6 @@ func remoteCatalogPreferences(preferences *RemotePreferences) *RemotePreferences
 		return &RemotePreferences{}
 	}
 	shared := *preferences
-	shared.RawgAPIKey = ""
-	shared.SteamGridDBAPIKey = ""
-	shared.RawgAPIKeyUpdatedAt = time.Time{}
-	shared.SteamGridDBAPIKeyUpdatedAt = time.Time{}
 	shared.FavoriteGames = normalizeStringList(shared.FavoriteGames)
 	shared.TagOrder = normalizeStringList(shared.TagOrder)
 	shared.PinnedTags = normalizeStringList(shared.PinnedTags)

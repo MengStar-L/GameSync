@@ -62,19 +62,6 @@ func unprotectAppStateSecrets(state *AppState) error {
 	return nil
 }
 
-func redactAppStateSecrets(state AppState) AppState {
-	redacted := cloneState(state)
-	for index := range redacted.Accounts {
-		redacted.Accounts[index].APIToken = ""
-		redacted.Accounts[index].R2AccessKeyID = ""
-		redacted.Accounts[index].R2SecretAccessKey = ""
-		redacted.Accounts[index].WebdavPassword = ""
-	}
-	redacted.Preferences.RawgAPIKey = ""
-	redacted.Preferences.SteamGridDBAPIKey = ""
-	return redacted
-}
-
 func protectStateSecret(value string) (string, error) {
 	if strings.TrimSpace(value) == "" || strings.HasPrefix(value, protectedSecretPrefix) {
 		return value, nil

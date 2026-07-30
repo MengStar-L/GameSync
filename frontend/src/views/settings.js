@@ -1,3 +1,5 @@
+import { createSelectField } from "../settings-select.js";
+
 // ============================================================
 // views/settings.js —— 设置页（前缀 .set-）
 // 左锚点目录 + 右分区卡片：本地路径 / 设备信息 / 软件更新 /
@@ -207,22 +209,6 @@ export function mount(root, ctx) {
 
   const autoSyncChk = h("input", { type: "checkbox", checked: Boolean(prefsInit.autoSyncOnLaunch) });
 
-  function selectField(label, options, current, help) {
-    const sel = h(
-      "select",
-      { class: "input" },
-      options.map(([value, text]) => h("option", { value, selected: value === current }, text)),
-    );
-    const field = h(
-      "div",
-      { class: "field" },
-      h("span", { class: "field-label" }, label),
-      sel,
-      help ? h("span", { class: "field-help" }, help) : null,
-    );
-    return { field, sel };
-  }
-
   function secretField(label, value, help) {
     const input = h("input", {
       class: "input",
@@ -253,36 +239,42 @@ export function mount(root, ctx) {
     return { field, input };
   }
 
-  const modeSelect = selectField(
-    "启动同步模式",
-    [
+  const modeSelect = createSelectField({
+    h,
+    icon,
+    label: "启动同步模式",
+    options: [
       ["smart", "智能判断"],
       ["local-first", "优先本地"],
       ["cloud-first", "优先云端"],
     ],
-    prefsInit.startupSyncMode || "smart",
-  );
+    current: prefsInit.startupSyncMode || "smart",
+  });
 
-  const policySelect = selectField(
-    "冲突策略",
-    [
+  const policySelect = createSelectField({
+    h,
+    icon,
+    label: "冲突策略",
+    options: [
       ["manual", "手动处理"],
       ["local", "优先本地"],
       ["remote", "优先云端"],
     ],
-    prefsInit.conflictPolicy || "manual",
-  );
+    current: prefsInit.conflictPolicy || "manual",
+  });
 
-  const backgroundSyncSelect = selectField(
-    "后台检查间隔",
-    [
+  const backgroundSyncSelect = createSelectField({
+    h,
+    icon,
+    label: "后台检查间隔",
+    options: [
       ["0", "关闭"],
       ["30", "30 秒"],
       ["60", "60 秒"],
       ["300", "5 分钟"],
     ],
-    String(prefsInit.backgroundSyncIntervalSeconds ?? 60),
-  );
+    current: String(prefsInit.backgroundSyncIntervalSeconds ?? 60),
+  });
 
   const rawgField = secretField("RAWG API Key", prefsInit.rawgApiKey, "用于在详情页搜索游戏资料与封面");
   const sgdbField = secretField("SteamGridDB API Key", prefsInit.steamGridDbApiKey, "用于拉取更高质量的游戏封面");
@@ -296,9 +288,9 @@ export function mount(root, ctx) {
           try {
             await store.actions.savePreferences({
               autoSyncOnLaunch: autoSyncChk.checked,
-              startupSyncMode: modeSelect.sel.value,
-              conflictPolicy: policySelect.sel.value,
-              backgroundSyncIntervalSeconds: Number(backgroundSyncSelect.sel.value),
+              startupSyncMode: modeSelect.value,
+              conflictPolicy: policySelect.value,
+              backgroundSyncIntervalSeconds: Number(backgroundSyncSelect.value),
               rawgApiKey: rawgField.input.value.trim(),
               steamGridDbApiKey: sgdbField.input.value.trim(),
             });
@@ -383,7 +375,7 @@ export function mount(root, ctx) {
       onClick: async () => {
         if (importBtn.classList.contains("busy")) return;
         const yes = await ui.confirm({
-          message: "从备份恢复将覆盖当前的账号、游戏目录与偏好设置。\n确定继续吗？",
+          message: "从备份恢复将覆盖当前云账号、游戏目录信息与同步偏好。当前设备身份会保留，本机游戏路径需要重新配置。\n确定继续吗？",
           confirmText: "继续恢复",
           cancelText: "取消",
           tone: "warn",
@@ -410,7 +402,7 @@ export function mount(root, ctx) {
     h(
       "p",
       { class: "set-note" },
-      "配置备份包含云账号、游戏目录与偏好设置（不含存档文件本体），可用于迁移到新设备或灾难恢复。",
+      "包含 API Key、云账号及明文凭据，不包含存档文件和本机游戏路径。",
     ),
     h("div", { class: "set-actions" }, exportBtn, importBtn),
   );
@@ -480,6 +472,9 @@ export function mount(root, ctx) {
 
   return () => {
     disposed = true;
+    modeSelect.destroy();
+    policySelect.destroy();
+    backgroundSyncSelect.destroy();
     off();
   };
 }

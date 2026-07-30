@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestStoreProtectsSecretsAtRestAndRedactsExports(t *testing.T) {
+func TestStoreProtectsSecretsAtRestAndExportsPlaintextBackup(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewStore(dir)
 	if err != nil {
@@ -86,20 +86,21 @@ func TestStoreProtectsSecretsAtRestAndRedactsExports(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, secret := range secrets {
-		if bytes.Contains(exported, []byte(secret)) {
-			t.Fatalf("export contains plaintext secret %q", secret)
+		if !bytes.Contains(exported, []byte(secret)) {
+			t.Fatalf("export omitted plaintext secret %q", secret)
 		}
 	}
-	var exportedState AppState
-	if err := json.Unmarshal(exported, &exportedState); err != nil {
+	var backup PortableBackup
+	if err := json.Unmarshal(exported, &backup); err != nil {
 		t.Fatal(err)
 	}
-	if exportedState.Accounts[0].APIToken != "" ||
-		exportedState.Accounts[0].R2AccessKeyID != "" ||
-		exportedState.Accounts[0].R2SecretAccessKey != "" ||
-		exportedState.Preferences.RawgAPIKey != "" ||
-		exportedState.Preferences.SteamGridDBAPIKey != "" {
-		t.Fatalf("exported state was not redacted: %+v", exportedState.Accounts[0])
+	if backup.FormatVersion != PortableBackupFormatVersion ||
+		backup.State.Accounts[0].APIToken != secrets[0] ||
+		backup.State.Accounts[0].R2AccessKeyID != secrets[1] ||
+		backup.State.Accounts[0].R2SecretAccessKey != secrets[2] ||
+		backup.State.Preferences.RawgAPIKey != secrets[3] ||
+		backup.State.Preferences.SteamGridDBAPIKey != secrets[4] {
+		t.Fatalf("exported backup did not preserve secrets: %+v", backup.State.Accounts[0])
 	}
 }
 

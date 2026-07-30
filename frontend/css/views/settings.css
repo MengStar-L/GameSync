@@ -221,6 +221,131 @@
   gap: 0 16px;
 }
 
+.set-select {
+  position: relative;
+}
+
+.set-select-trigger {
+  width: 100%;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease),
+    background-color var(--t-fast) var(--ease);
+}
+
+.set-select-trigger:hover,
+.set-select-trigger[aria-expanded="true"] {
+  border-color: var(--line-strong);
+  background: var(--card-warm);
+}
+
+.set-select-trigger:focus-visible {
+  outline: none;
+  border-color: var(--vermilion);
+  box-shadow: 0 0 0 3px var(--vermilion-soft);
+}
+
+.set-select-value,
+.set-select-option-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.set-select-chevron {
+  display: grid;
+  place-content: center;
+  flex: none;
+  color: var(--ink-3);
+  transition: transform var(--t-fast) var(--ease);
+}
+
+.set-select-trigger[aria-expanded="true"] .set-select-chevron {
+  transform: rotate(180deg);
+}
+
+.set-select-chevron svg,
+.set-select-check svg {
+  width: 15px;
+  height: 15px;
+}
+
+.set-select-menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  box-shadow: var(--shadow-pop);
+}
+
+.set-select.open-up .set-select-menu {
+  top: auto;
+  bottom: calc(100% + 5px);
+}
+
+.set-select-menu[hidden] {
+  display: none;
+}
+
+.set-select-option {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.set-select-option:hover,
+.set-select-option.active {
+  background: var(--paper-2);
+  color: var(--ink);
+}
+
+.set-select-option[aria-selected="true"] {
+  background: var(--vermilion-soft);
+  color: var(--vermilion-deep);
+}
+
+.set-select-check {
+  display: grid;
+  place-content: center;
+  flex: none;
+  color: var(--vermilion);
+  opacity: 0;
+}
+
+.set-select-option[aria-selected="true"] .set-select-check {
+  opacity: 1;
+}
+
 /* 密钥输入：右侧眼睛按钮 */
 .set-secret {
   position: relative;
@@ -305,4 +430,26 @@
   margin-top: 10px;
   padding-top: 6px;
   border-top: 1px dashed var(--line);
+}
+
+@media (max-width: 760px) {
+  .set-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 22px;
+  }
+
+  .set-nav {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+    padding: 0 0 6px;
+  }
+
+  .set-nav-item {
+    flex: none;
+  }
+
+  .set-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

@@ -549,7 +549,7 @@ func (a *App) restoreFromPrimary(password string, verifyAfter bool) (core.Dashbo
 		})
 	}
 
-	if err := a.store.MergeRemoteCatalog(catalog); err != nil {
+	if err := a.mergeRemoteCatalog(catalog); err != nil {
 		return core.DashboardSnapshot{}, err
 	}
 	if err := a.store.MarkCatalogInitialPullCompleted(); err != nil {
@@ -563,6 +563,18 @@ func (a *App) restoreFromPrimary(password string, verifyAfter bool) (core.Dashbo
 		go a.verifyAccounts(false)
 	}
 	return a.snapshot()
+}
+
+func (a *App) mergeRemoteCatalog(catalog core.RemoteCatalog) error {
+	before := a.store.Snapshot().Preferences.BackgroundSyncIntervalSeconds
+	if err := a.store.MergeRemoteCatalog(catalog); err != nil {
+		return err
+	}
+	after := a.store.Snapshot().Preferences.BackgroundSyncIntervalSeconds
+	if before != after {
+		a.resetBackgroundSyncScheduler()
+	}
+	return nil
 }
 
 func (a *App) VerifyAccount(accountID string) (core.DashboardSnapshot, error) {
@@ -3153,15 +3165,24 @@ func (a *App) syncRemoteCatalog() error {
 			Accounts: state.Accounts,
 			Games:    state.Games,
 			Preferences: &core.RemotePreferences{
-				TagOrder:                 state.Preferences.TagOrder,
-				TagOrderUpdatedAt:        state.Preferences.TagOrderUpdatedAt,
-				PinnedTags:               state.Preferences.PinnedTags,
-				PinnedTagsUpdatedAt:      state.Preferences.PinnedTagsUpdatedAt,
-				SidebarNavOrder:          state.Preferences.SidebarNavOrder,
-				SidebarNavOrderUpdatedAt: state.Preferences.SidebarNavOrderUpdatedAt,
-				FavoriteGames:            state.Preferences.FavoriteGames,
-				FavoriteGamesUpdatedAt:   state.Preferences.FavoriteGamesUpdatedAt,
-				GameOrderUpdatedAt:       state.Preferences.GameOrderUpdatedAt,
+				AutoSyncOnLaunch:              state.Preferences.AutoSyncOnLaunch,
+				StartupSyncMode:               state.Preferences.StartupSyncMode,
+				ConflictPolicy:                state.Preferences.ConflictPolicy,
+				BackgroundSyncIntervalSeconds: state.Preferences.BackgroundSyncIntervalSeconds,
+				SyncSettingsUpdatedAt:         state.Preferences.SyncSettingsUpdatedAt,
+				RawgAPIKey:                    state.Preferences.RawgAPIKey,
+				SteamGridDBAPIKey:             state.Preferences.SteamGridDBAPIKey,
+				RawgAPIKeyUpdatedAt:           state.Preferences.RawgAPIKeyUpdatedAt,
+				SteamGridDBAPIKeyUpdatedAt:    state.Preferences.SteamGridDBAPIKeyUpdatedAt,
+				TagOrder:                      state.Preferences.TagOrder,
+				TagOrderUpdatedAt:             state.Preferences.TagOrderUpdatedAt,
+				PinnedTags:                    state.Preferences.PinnedTags,
+				PinnedTagsUpdatedAt:           state.Preferences.PinnedTagsUpdatedAt,
+				SidebarNavOrder:               state.Preferences.SidebarNavOrder,
+				SidebarNavOrderUpdatedAt:      state.Preferences.SidebarNavOrderUpdatedAt,
+				FavoriteGames:                 state.Preferences.FavoriteGames,
+				FavoriteGamesUpdatedAt:        state.Preferences.FavoriteGamesUpdatedAt,
+				GameOrderUpdatedAt:            state.Preferences.GameOrderUpdatedAt,
 			},
 			Tombstones:        activeCatalogTombstones(state),
 			StorageGeneration: state.StorageGeneration,
@@ -3212,7 +3233,7 @@ func (a *App) syncRemoteCatalog() error {
 		catalog, encrypted = normalizeRemoteCatalogForMerge(catalog, encrypted)
 		catalog, _ = prepareCatalogForOrdinaryMerge(a.store.Snapshot(), catalog, encrypted, a.recoveryPassword)
 		before := catalogStateFingerprint(a.store.Snapshot())
-		if err := a.store.MergeRemoteCatalog(catalog); err != nil {
+		if err := a.mergeRemoteCatalog(catalog); err != nil {
 			return err
 		}
 		if catalog.Revision > 0 {
@@ -3296,7 +3317,10 @@ func localCatalogAheadOfRemote(state core.AppState, catalog core.RemoteCatalog) 
 		remotePrefs = *catalog.Preferences
 	}
 	prefs := state.Preferences
-	return prefs.FavoriteGamesUpdatedAt.After(remotePrefs.FavoriteGamesUpdatedAt) ||
+	return prefs.SyncSettingsUpdatedAt.After(remotePrefs.SyncSettingsUpdatedAt) ||
+		prefs.RawgAPIKeyUpdatedAt.After(remotePrefs.RawgAPIKeyUpdatedAt) ||
+		prefs.SteamGridDBAPIKeyUpdatedAt.After(remotePrefs.SteamGridDBAPIKeyUpdatedAt) ||
+		prefs.FavoriteGamesUpdatedAt.After(remotePrefs.FavoriteGamesUpdatedAt) ||
 		prefs.TagOrderUpdatedAt.After(remotePrefs.TagOrderUpdatedAt) ||
 		prefs.PinnedTagsUpdatedAt.After(remotePrefs.PinnedTagsUpdatedAt) ||
 		prefs.SidebarNavOrderUpdatedAt.After(remotePrefs.SidebarNavOrderUpdatedAt) ||
@@ -3536,7 +3560,7 @@ func (a *App) pullRemoteCatalog() (bool, error) {
 	catalog, encrypted = normalizeRemoteCatalogForMerge(catalog, encrypted)
 	catalog, _ = prepareCatalogForOrdinaryMerge(state, catalog, encrypted, a.recoveryPassword)
 	before := catalogStateFingerprint(state)
-	if err := a.store.MergeRemoteCatalog(catalog); err != nil {
+	if err := a.mergeRemoteCatalog(catalog); err != nil {
 		return false, err
 	}
 	if err := a.store.MarkCatalogInitialPullCompleted(); err != nil {
@@ -4465,7 +4489,9 @@ func (a *App) ImportAppBackup() error {
 	if err := a.store.ImportState(data); err != nil {
 		return err
 	}
+	a.resetBackgroundSyncScheduler()
 	a.queueRemoteCatalogSync("import backup")
+	a.emitStateUpdated()
 
 	return nil
 }

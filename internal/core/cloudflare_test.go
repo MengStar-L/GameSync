@@ -51,29 +51,39 @@ func newD1HandoffTestClient(t *testing.T, transport d1RoundTripFunc) *D1Client {
 	return client
 }
 
-func TestRemoteCatalogPreferencesStripsAPIKeys(t *testing.T) {
+func TestRemoteCatalogPreferencesKeepsCompleteSyncPreferences(t *testing.T) {
 	now := time.Now()
 	preferences := remoteCatalogPreferences(&RemotePreferences{
-		RawgAPIKey:                 "rawg-secret",
-		SteamGridDBAPIKey:          "sgdb-secret",
-		RawgAPIKeyUpdatedAt:        now,
-		SteamGridDBAPIKeyUpdatedAt: now,
-		FavoriteGames:              []string{"game-1", "game-1"},
-		FavoriteGamesUpdatedAt:     now,
-		TagOrder:                   []string{"tag-a", "tag-a"},
-		TagOrderUpdatedAt:          now,
-		PinnedTags:                 []string{"tag-a", "tag-a", "tag-b"},
-		PinnedTagsUpdatedAt:        now,
-		SidebarNavOrder:            []string{"page:all-games", "tag:tag-a", "tag:tag-a"},
-		SidebarNavOrderUpdatedAt:   now,
-		GameOrderUpdatedAt:         now,
+		AutoSyncOnLaunch:              true,
+		StartupSyncMode:               "cloud-first",
+		ConflictPolicy:                "manual",
+		BackgroundSyncIntervalSeconds: 30,
+		SyncSettingsUpdatedAt:         now,
+		RawgAPIKey:                    "rawg-secret",
+		SteamGridDBAPIKey:             "sgdb-secret",
+		RawgAPIKeyUpdatedAt:           now,
+		SteamGridDBAPIKeyUpdatedAt:    now,
+		FavoriteGames:                 []string{"game-1", "game-1"},
+		FavoriteGamesUpdatedAt:        now,
+		TagOrder:                      []string{"tag-a", "tag-a"},
+		TagOrderUpdatedAt:             now,
+		PinnedTags:                    []string{"tag-a", "tag-a", "tag-b"},
+		PinnedTagsUpdatedAt:           now,
+		SidebarNavOrder:               []string{"page:all-games", "tag:tag-a", "tag:tag-a"},
+		SidebarNavOrderUpdatedAt:      now,
+		GameOrderUpdatedAt:            now,
 	})
 
-	if preferences.RawgAPIKey != "" || preferences.SteamGridDBAPIKey != "" {
-		t.Fatalf("remote preferences leaked api keys: %+v", preferences)
+	if preferences.RawgAPIKey != "rawg-secret" || preferences.SteamGridDBAPIKey != "sgdb-secret" {
+		t.Fatalf("remote preferences lost api keys: %+v", preferences)
 	}
-	if !preferences.RawgAPIKeyUpdatedAt.IsZero() || !preferences.SteamGridDBAPIKeyUpdatedAt.IsZero() {
-		t.Fatalf("remote preferences kept api key timestamps: %+v", preferences)
+	if !preferences.RawgAPIKeyUpdatedAt.Equal(now) || !preferences.SteamGridDBAPIKeyUpdatedAt.Equal(now) ||
+		!preferences.SyncSettingsUpdatedAt.Equal(now) {
+		t.Fatalf("remote preferences lost synchronized timestamps: %+v", preferences)
+	}
+	if !preferences.AutoSyncOnLaunch || preferences.StartupSyncMode != "cloud-first" ||
+		preferences.ConflictPolicy != "manual" || preferences.BackgroundSyncIntervalSeconds != 30 {
+		t.Fatalf("remote preferences lost synchronized settings: %+v", preferences)
 	}
 	if len(preferences.FavoriteGames) != 1 || preferences.FavoriteGames[0] != "game-1" {
 		t.Fatalf("favorite games were not preserved and normalized: %+v", preferences.FavoriteGames)

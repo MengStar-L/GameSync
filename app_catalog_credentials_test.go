@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"gamesync/internal/core"
 )
@@ -25,6 +26,26 @@ func TestCatalogCredentialsIncludePrimaryCloudflareAndWebdav(t *testing.T) {
 	restored, failures := decryptCatalogCredentials(public, encrypted, "recovery")
 	if len(failures) != 0 || restored.Accounts[0].APIToken != "token" || restored.Accounts[1].WebdavPassword != "password" {
 		t.Fatalf("credential restore = %+v, failures = %+v", restored.Accounts, failures)
+	}
+}
+
+func TestLocalCatalogAheadOfRemoteIncludesAllSynchronizedPreferenceGroups(t *testing.T) {
+	now := time.Now().UTC()
+	remote := core.RemoteCatalog{Preferences: &core.RemotePreferences{
+		SyncSettingsUpdatedAt:      now,
+		RawgAPIKeyUpdatedAt:        now,
+		SteamGridDBAPIKeyUpdatedAt: now,
+	}}
+	for _, update := range []func(*core.Preferences){
+		func(prefs *core.Preferences) { prefs.SyncSettingsUpdatedAt = now.Add(time.Second) },
+		func(prefs *core.Preferences) { prefs.RawgAPIKeyUpdatedAt = now.Add(time.Second) },
+		func(prefs *core.Preferences) { prefs.SteamGridDBAPIKeyUpdatedAt = now.Add(time.Second) },
+	} {
+		state := core.AppState{}
+		update(&state.Preferences)
+		if !localCatalogAheadOfRemote(state, remote) {
+			t.Fatal("newer synchronized preference group was not detected")
+		}
 	}
 }
 

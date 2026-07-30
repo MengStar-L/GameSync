@@ -130,7 +130,7 @@ func (a *App) followCommittedStorageHandoffs() error {
 		if credentialErr := failures[verified.ID]; credentialErr != nil {
 			return fmt.Errorf("%w: %v", errPendingStorageHandoff, credentialErr)
 		}
-		if err := a.store.MergeRemoteCatalog(targetRemote); err != nil {
+		if err := a.mergeRemoteCatalog(targetRemote); err != nil {
 			return err
 		}
 		merged := a.store.Snapshot()

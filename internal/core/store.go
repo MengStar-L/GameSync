@@ -52,32 +52,33 @@ func (s *Store) Snapshot() AppState {
 func (s *Store) ExportState() ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return json.MarshalIndent(redactAppStateSecrets(s.state), "", "  ")
+	return EncodePortableBackup(s.state, time.Now().UTC())
 }
 
 // ImportState restores app state from an exported backup payload.
 func (s *Store) ImportState(data []byte) error {
-	var imported AppState
-	backgroundSyncIntervalPresent := preferencesJSONFieldPresent(data, "backgroundSyncIntervalSeconds")
-	if err := json.Unmarshal(data, &imported); err != nil {
-		return fmt.Errorf("瑙ｆ瀽瀵煎叆鐨勭姸鎬佸浠藉け璐? %w", err)
+	imported, err := DecodePortableBackup(data)
+	if err != nil {
+		return err
 	}
+	backgroundSyncIntervalPresent := preferencesJSONFieldPresent(data, "backgroundSyncIntervalSeconds")
+	clearPortableMachinePaths(&imported)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	previousState := s.state
+	previousAliases := make(map[string]string, len(s.accountAliases))
+	for oldID, newID := range s.accountAliases {
+		previousAliases[oldID] = newID
+	}
 	currentDevice := s.state.Device
-
-	s.state.Games = imported.Games
-	s.state.Accounts = imported.Accounts
-	s.state.Preferences = imported.Preferences
+	s.state = imported
 	if !backgroundSyncIntervalPresent || !IsValidBackgroundSyncInterval(s.state.Preferences.BackgroundSyncIntervalSeconds) {
 		s.state.Preferences.BackgroundSyncIntervalSeconds = DefaultBackgroundSyncIntervalSeconds
 	}
-	s.state.Activities = imported.Activities
-	clearGameLocalPaths(s.state.Games)
+	migrateLocalPreferenceTimestamps(&s.state.Preferences, time.Now())
 	s.state.CatalogSync.Dirty = true
-
 	s.state.Device = currentDevice
 
 	if s.state.Games == nil {
@@ -96,7 +97,12 @@ func (s *Store) ImportState(data []byte) error {
 	s.reorderAccountsLocked()
 	s.assignAccountNamesLocked()
 
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		s.state = previousState
+		s.accountAliases = previousAliases
+		return err
+	}
+	return nil
 }
 
 func (s *Store) IsFirstLaunch() bool {
@@ -660,6 +666,28 @@ func (s *Store) MergeRemoteCatalog(catalog RemoteCatalog) error {
 		s.state.Preferences.FavoriteGames = normalizeStringList(catalog.Preferences.FavoriteGames)
 		s.state.Preferences.FavoriteGamesUpdatedAt = catalog.Preferences.FavoriteGamesUpdatedAt
 	}
+	if catalog.Preferences != nil &&
+		!catalog.Preferences.SyncSettingsUpdatedAt.IsZero() &&
+		!s.state.Preferences.SyncSettingsUpdatedAt.After(catalog.Preferences.SyncSettingsUpdatedAt) &&
+		IsValidBackgroundSyncInterval(catalog.Preferences.BackgroundSyncIntervalSeconds) {
+		s.state.Preferences.AutoSyncOnLaunch = catalog.Preferences.AutoSyncOnLaunch
+		s.state.Preferences.StartupSyncMode = catalog.Preferences.StartupSyncMode
+		s.state.Preferences.ConflictPolicy = catalog.Preferences.ConflictPolicy
+		s.state.Preferences.BackgroundSyncIntervalSeconds = catalog.Preferences.BackgroundSyncIntervalSeconds
+		s.state.Preferences.SyncSettingsUpdatedAt = catalog.Preferences.SyncSettingsUpdatedAt
+	}
+	if catalog.Preferences != nil &&
+		!catalog.Preferences.RawgAPIKeyUpdatedAt.IsZero() &&
+		!s.state.Preferences.RawgAPIKeyUpdatedAt.After(catalog.Preferences.RawgAPIKeyUpdatedAt) {
+		s.state.Preferences.RawgAPIKey = catalog.Preferences.RawgAPIKey
+		s.state.Preferences.RawgAPIKeyUpdatedAt = catalog.Preferences.RawgAPIKeyUpdatedAt
+	}
+	if catalog.Preferences != nil &&
+		!catalog.Preferences.SteamGridDBAPIKeyUpdatedAt.IsZero() &&
+		!s.state.Preferences.SteamGridDBAPIKeyUpdatedAt.After(catalog.Preferences.SteamGridDBAPIKeyUpdatedAt) {
+		s.state.Preferences.SteamGridDBAPIKey = catalog.Preferences.SteamGridDBAPIKey
+		s.state.Preferences.SteamGridDBAPIKeyUpdatedAt = catalog.Preferences.SteamGridDBAPIKeyUpdatedAt
+	}
 
 	s.normalizeAccountsLocked()
 	s.reorderAccountsLocked()
@@ -881,19 +909,16 @@ func (s *Store) SavePreferences(preferences Preferences) error {
 		preferences.ConflictPolicy = "manual"
 	}
 	now := time.Now()
+	preferences = resolvePreferenceSyncSettings(s.state.Preferences, preferences, now)
 	preferences.FavoriteGames, preferences.FavoriteGamesUpdatedAt = resolvePreferenceListField(
 		s.state.Preferences.FavoriteGames, s.state.Preferences.FavoriteGamesUpdatedAt,
 		preferences.FavoriteGames, preferences.FavoriteGamesUpdatedAt, now)
-	if s.state.Preferences.RawgAPIKey != preferences.RawgAPIKey {
-		preferences.RawgAPIKeyUpdatedAt = time.Now()
-	} else if preferences.RawgAPIKeyUpdatedAt.IsZero() {
-		preferences.RawgAPIKeyUpdatedAt = s.state.Preferences.RawgAPIKeyUpdatedAt
-	}
-	if s.state.Preferences.SteamGridDBAPIKey != preferences.SteamGridDBAPIKey {
-		preferences.SteamGridDBAPIKeyUpdatedAt = time.Now()
-	} else if preferences.SteamGridDBAPIKeyUpdatedAt.IsZero() {
-		preferences.SteamGridDBAPIKeyUpdatedAt = s.state.Preferences.SteamGridDBAPIKeyUpdatedAt
-	}
+	preferences.RawgAPIKey, preferences.RawgAPIKeyUpdatedAt = resolvePreferenceStringField(
+		s.state.Preferences.RawgAPIKey, s.state.Preferences.RawgAPIKeyUpdatedAt,
+		preferences.RawgAPIKey, preferences.RawgAPIKeyUpdatedAt, now)
+	preferences.SteamGridDBAPIKey, preferences.SteamGridDBAPIKeyUpdatedAt = resolvePreferenceStringField(
+		s.state.Preferences.SteamGridDBAPIKey, s.state.Preferences.SteamGridDBAPIKeyUpdatedAt,
+		preferences.SteamGridDBAPIKey, preferences.SteamGridDBAPIKeyUpdatedAt, now)
 	preferences.TagOrder, preferences.TagOrderUpdatedAt = resolvePreferenceListField(
 		s.state.Preferences.TagOrder, s.state.Preferences.TagOrderUpdatedAt,
 		preferences.TagOrder, preferences.TagOrderUpdatedAt, now)
@@ -924,6 +949,55 @@ func resolvePreferenceListField(currentValue []string, currentAt time.Time, inco
 	}
 	if incomingAt.Before(currentAt) {
 		return append([]string{}, currentValue...), currentAt
+	}
+	return incomingValue, now
+}
+
+func resolvePreferenceSyncSettings(current Preferences, incoming Preferences, now time.Time) Preferences {
+	if syncSettingsEqual(current, incoming) {
+		incoming.SyncSettingsUpdatedAt = maxTimeValue(current.SyncSettingsUpdatedAt, incoming.SyncSettingsUpdatedAt)
+		return incoming
+	}
+	if incoming.SyncSettingsUpdatedAt.Before(current.SyncSettingsUpdatedAt) {
+		incoming.AutoSyncOnLaunch = current.AutoSyncOnLaunch
+		incoming.StartupSyncMode = current.StartupSyncMode
+		incoming.ConflictPolicy = current.ConflictPolicy
+		incoming.BackgroundSyncIntervalSeconds = current.BackgroundSyncIntervalSeconds
+		incoming.SyncSettingsUpdatedAt = current.SyncSettingsUpdatedAt
+		return incoming
+	}
+	incoming.SyncSettingsUpdatedAt = now
+	return incoming
+}
+
+func syncSettingsEqual(left Preferences, right Preferences) bool {
+	return left.AutoSyncOnLaunch == right.AutoSyncOnLaunch &&
+		left.StartupSyncMode == right.StartupSyncMode &&
+		left.ConflictPolicy == right.ConflictPolicy &&
+		left.BackgroundSyncIntervalSeconds == right.BackgroundSyncIntervalSeconds
+}
+
+func migrateLocalPreferenceTimestamps(preferences *Preferences, now time.Time) {
+	if preferences == nil {
+		return
+	}
+	if preferences.SyncSettingsUpdatedAt.IsZero() && !syncSettingsEqual(*preferences, DefaultPreferences()) {
+		preferences.SyncSettingsUpdatedAt = now
+	}
+	if preferences.RawgAPIKeyUpdatedAt.IsZero() && strings.TrimSpace(preferences.RawgAPIKey) != "" {
+		preferences.RawgAPIKeyUpdatedAt = now
+	}
+	if preferences.SteamGridDBAPIKeyUpdatedAt.IsZero() && strings.TrimSpace(preferences.SteamGridDBAPIKey) != "" {
+		preferences.SteamGridDBAPIKeyUpdatedAt = now
+	}
+}
+
+func resolvePreferenceStringField(currentValue string, currentAt time.Time, incomingValue string, incomingAt time.Time, now time.Time) (string, time.Time) {
+	if currentValue == incomingValue {
+		return incomingValue, maxTimeValue(currentAt, incomingAt)
+	}
+	if incomingAt.Before(currentAt) {
+		return currentValue, currentAt
 	}
 	return incomingValue, now
 }
@@ -1038,6 +1112,7 @@ func (s *Store) load() error {
 	if !backgroundSyncIntervalPresent || !IsValidBackgroundSyncInterval(s.state.Preferences.BackgroundSyncIntervalSeconds) {
 		s.state.Preferences.BackgroundSyncIntervalSeconds = DefaultBackgroundSyncIntervalSeconds
 	}
+	migrateLocalPreferenceTimestamps(&s.state.Preferences, time.Now())
 	if s.state.Games == nil {
 		s.state.Games = []Game{}
 	}
@@ -1064,11 +1139,18 @@ func (s *Store) load() error {
 func preferencesJSONFieldPresent(content []byte, field string) bool {
 	var document struct {
 		Preferences map[string]json.RawMessage `json:"preferences"`
+		State       *struct {
+			Preferences map[string]json.RawMessage `json:"preferences"`
+		} `json:"state"`
 	}
-	if json.Unmarshal(content, &document) != nil || document.Preferences == nil {
+	if json.Unmarshal(content, &document) != nil {
 		return false
 	}
-	_, exists := document.Preferences[field]
+	preferences := document.Preferences
+	if preferences == nil && document.State != nil {
+		preferences = document.State.Preferences
+	}
+	_, exists := preferences[field]
 	return exists
 }
 

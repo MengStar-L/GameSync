@@ -50,6 +50,7 @@ type Preferences struct {
 	TagOrder                      []string  `json:"tagOrder"`
 	PinnedTags                    []string  `json:"pinnedTags"`
 	SidebarNavOrder               []string  `json:"sidebarNavOrder"`
+	SyncSettingsUpdatedAt         time.Time `json:"syncSettingsUpdatedAt,omitempty" ts_type:"string"`
 	RawgAPIKeyUpdatedAt           time.Time `json:"rawgApiKeyUpdatedAt,omitempty" ts_type:"string"`
 	SteamGridDBAPIKeyUpdatedAt    time.Time `json:"steamGridDbApiKeyUpdatedAt,omitempty" ts_type:"string"`
 	FavoriteGamesUpdatedAt        time.Time `json:"favoriteGamesUpdatedAt,omitempty" ts_type:"string"`
@@ -168,19 +169,24 @@ type StorageMigrationState struct {
 }
 
 type RemotePreferences struct {
-	RawgAPIKey                 string    `json:"rawgApiKey"`
-	SteamGridDBAPIKey          string    `json:"steamGridDbApiKey"`
-	RawgAPIKeyUpdatedAt        time.Time `json:"rawgApiKeyUpdatedAt,omitempty" ts_type:"string"`
-	SteamGridDBAPIKeyUpdatedAt time.Time `json:"steamGridDbApiKeyUpdatedAt,omitempty" ts_type:"string"`
-	FavoriteGames              []string  `json:"favoriteGames"`
-	FavoriteGamesUpdatedAt     time.Time `json:"favoriteGamesUpdatedAt,omitempty" ts_type:"string"`
-	TagOrder                   []string  `json:"tagOrder"`
-	TagOrderUpdatedAt          time.Time `json:"tagOrderUpdatedAt,omitempty" ts_type:"string"`
-	PinnedTags                 []string  `json:"pinnedTags"`
-	PinnedTagsUpdatedAt        time.Time `json:"pinnedTagsUpdatedAt,omitempty" ts_type:"string"`
-	SidebarNavOrder            []string  `json:"sidebarNavOrder"`
-	SidebarNavOrderUpdatedAt   time.Time `json:"sidebarNavOrderUpdatedAt,omitempty" ts_type:"string"`
-	GameOrderUpdatedAt         time.Time `json:"gameOrderUpdatedAt,omitempty" ts_type:"string"`
+	AutoSyncOnLaunch              bool      `json:"autoSyncOnLaunch"`
+	StartupSyncMode               string    `json:"startupSyncMode"`
+	ConflictPolicy                string    `json:"conflictPolicy"`
+	BackgroundSyncIntervalSeconds int       `json:"backgroundSyncIntervalSeconds"`
+	SyncSettingsUpdatedAt         time.Time `json:"syncSettingsUpdatedAt,omitempty" ts_type:"string"`
+	RawgAPIKey                    string    `json:"rawgApiKey"`
+	SteamGridDBAPIKey             string    `json:"steamGridDbApiKey"`
+	RawgAPIKeyUpdatedAt           time.Time `json:"rawgApiKeyUpdatedAt,omitempty" ts_type:"string"`
+	SteamGridDBAPIKeyUpdatedAt    time.Time `json:"steamGridDbApiKeyUpdatedAt,omitempty" ts_type:"string"`
+	FavoriteGames                 []string  `json:"favoriteGames"`
+	FavoriteGamesUpdatedAt        time.Time `json:"favoriteGamesUpdatedAt,omitempty" ts_type:"string"`
+	TagOrder                      []string  `json:"tagOrder"`
+	TagOrderUpdatedAt             time.Time `json:"tagOrderUpdatedAt,omitempty" ts_type:"string"`
+	PinnedTags                    []string  `json:"pinnedTags"`
+	PinnedTagsUpdatedAt           time.Time `json:"pinnedTagsUpdatedAt,omitempty" ts_type:"string"`
+	SidebarNavOrder               []string  `json:"sidebarNavOrder"`
+	SidebarNavOrderUpdatedAt      time.Time `json:"sidebarNavOrderUpdatedAt,omitempty" ts_type:"string"`
+	GameOrderUpdatedAt            time.Time `json:"gameOrderUpdatedAt,omitempty" ts_type:"string"`
 }
 
 type CatalogTombstones struct {
