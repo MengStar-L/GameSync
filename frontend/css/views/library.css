@@ -149,6 +149,11 @@
   cursor: pointer;
 }
 
+.lib-card:hover,
+.lib-card.menu-pin {
+  transform: none;
+}
+
 .lib-card:focus-visible {
   outline: 2px solid var(--vermilion);
   outline-offset: 2px;
@@ -187,7 +192,7 @@
 
 .lib-card:hover .lib-card-cover .cover img,
 .lib-card.menu-pin .lib-card-cover .cover img {
-  transform: scale(1.05);
+  transform: scale(1.03);
 }
 
 /* 悬停时封面轻压一层墨，衬托快速启动按钮 */
@@ -347,13 +352,6 @@
 .lib-mode-overlay-persistent .lib-card-cover .cover img {
   object-fit: cover;
   object-position: center;
-}
-
-.lib-mode-overlay-hover .lib-card:hover .lib-card-cover .cover img,
-.lib-mode-overlay-hover .lib-card.menu-pin .lib-card-cover .cover img,
-.lib-mode-overlay-persistent .lib-card:hover .lib-card-cover .cover img,
-.lib-mode-overlay-persistent .lib-card.menu-pin .lib-card-cover .cover img {
-  transform: none;
 }
 
 .lib-mode-overlay-hover .lib-card:hover .lib-card-cover::after,

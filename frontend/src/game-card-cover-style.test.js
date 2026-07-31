@@ -19,5 +19,15 @@ test("overlay metadata has no panel or cover mask", () => {
   assert.match(css, /\.lib-mode-overlay-hover \.lib-card-body,[\s\S]*?background: transparent;/);
   assert.match(css, /\.lib-mode-overlay-hover \.lib-card-body::before,[\s\S]*?content: none;/);
   assert.match(css, /\.lib-mode-overlay-hover \.lib-card:hover \.lib-card-cover::after,[\s\S]*?opacity: 0;/);
-  assert.match(css, /\.lib-mode-overlay-hover \.lib-card:hover \.lib-card-cover \.cover img,[\s\S]*?transform: none;/);
+});
+
+test("all game-card modes keep the frame stationary and zoom only the cover", () => {
+  assert.match(
+    css,
+    /\.lib-card:hover,[\s\S]*?\.lib-card\.menu-pin[\s\S]*?transform: none;/,
+  );
+  assert.match(
+    css,
+    /\.lib-card:hover \.lib-card-cover \.cover img,[\s\S]*?\.lib-card\.menu-pin \.lib-card-cover \.cover img[\s\S]*?transform: scale\(1\.03\);/,
+  );
 });
